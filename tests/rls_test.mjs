@@ -228,6 +228,29 @@ await como(U.paula);
 r = await q(`update public.eventos set titulo='Editado por pareja' where id=$1 returning id`, [evAmigo]);
 ok('Una pareja puede editar también la capa del amigo', !r.error && r.rows.length === 1, r.error);
 
+// eventos "de los dos" (compartido): un solo registro; mismas reglas de edición que cualquier evento
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values ($1,$2,'plan','Cena de los dos','2026-10-31',true,$2) returning id, compartido`, [esp1, U.paula.id]);
+ok('Paula crea un evento compartido (un solo registro)', !r.error && r.rows.length === 1 && r.rows[0].compartido === true, r.error);
+const evComp = r.rows[0]?.id;
+r = await q(`select count(*)::int n from public.eventos where titulo='Cena de los dos'`);
+ok('Solo existe un registro del evento compartido', r.rows[0].n === 1);
+await como(U.jorge);
+r = await q(`update public.eventos set titulo='Cena de los dos (Jorge)' where id=$1 returning id`, [evComp]);
+ok('Jorge (pareja) puede editar el evento compartido creado por Paula', !r.error && r.rows.length === 1, r.error);
+r = await q(`update public.eventos set compartido=false where id=$1 returning id`, [evComp]);
+ok('Jorge (pareja) puede quitar la marca de compartido', !r.error && r.rows.length === 1, r.error);
+r = await q(`update public.eventos set compartido=true where id=$1 returning id`, [evComp]);
+await como(U.amigo);
+r = await q(`select id from public.eventos where id=$1`, [evComp]);
+ok('El amigo ve el evento compartido', !r.error && r.rows.length === 1);
+r = await q(`update public.eventos set titulo='Cambio del amigo' where id=$1 returning id`, [evComp]);
+ok('El amigo NO puede editar un evento compartido de la pareja', !r.error && r.rows.length === 0);
+r = await q(`update public.eventos set compartido=true where id=$1 returning id`, [evJorge]);
+ok('El amigo NO puede marcar como compartido un evento de otro', !r.error && r.rows.length === 0);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values ($1,$2,'plan','Plan para todos','2026-11-01',true,$2) returning id`, [esp1, U.amigo.id]);
+ok('El amigo SÍ puede crear un evento compartido en su propia capa', !r.error && r.rows.length === 1, r.error);
+await como(U.paula);
+
 // ---------- 6. Límite de 5 personas ----------
 console.log('\n6. Límite de 5 personas');
 await db.exec('reset role');
@@ -249,6 +272,8 @@ ok('Quinta persona entra (extra2 = 5)', !r.error, r.error);
 await como(extra[2]);
 r = await q(`select public.aceptar_invitacion($1)`, [invs[2].id]);
 ok('La sexta persona NO entra', falla(r, '5 personas'), r.error);
+r = await q(`select id from public.eventos where compartido`);
+ok('Quien no es del calendario no ve ni los eventos compartidos', !r.error && r.rows.length === 0, r.error || r.rows.length);
 
 // ---------- 7. Borrado ----------
 console.log('\n7. Borrar');

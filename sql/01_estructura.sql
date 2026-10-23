@@ -65,6 +65,7 @@ create table if not exists public.eventos (
   repeticion   text check (repeticion in ('semanal')),
   repite_hasta date,
   excepciones  date[] not null default '{}',
+  compartido   boolean not null default false,  -- true = es de todos los del calendario (se muestra con un color propio)
   creado_por   uuid references auth.users(id) on delete set null,
   creado       timestamptz not null default now(),
   actualizado  timestamptz not null default now(),
@@ -73,6 +74,8 @@ create table if not exists public.eventos (
   check (repite_hasta is null or repeticion is not null),
   check (repite_hasta is null or repite_hasta >= fecha)
 );
+-- Para bases creadas con una versión anterior de este archivo:
+alter table public.eventos add column if not exists compartido boolean not null default false;
 create index if not exists eventos_espacio_fecha_idx on public.eventos (espacio_id, fecha);
 
 create table if not exists public.menu (

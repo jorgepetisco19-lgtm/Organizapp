@@ -76,6 +76,8 @@ const S = {
   miembros: [], enviadas: [], invitaciones: [],
   tab: 'inicio', inicioDia: 'manana',
   capas: new Set(), tipos: new Set(leerLocal('tipos', TIPOS.map((t) => t.id))),
+  tiposInicio: new Set(leerLocal('tipos_inicio', TIPOS.map((t) => t.id))),
+  vista: leerLocal('vista', 'lista'),
   diaSel: hoyInicial, mes: { y: Number(hoyInicial.slice(0, 4)), m: Number(hoyInicial.slice(5, 7)) },
   semana: inicioSemana(hoyInicial),
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
@@ -84,6 +86,11 @@ const S = {
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
 const miembro = (id) => S.miembros.find((m) => m.id === id);
 const colorDe = (id) => (miembro(id) || { color: '#888888' }).color;
+// Los eventos "de todos" (compartido) llevan un color propio, distinto de los de cada persona (PALETA no lo incluye).
+const COLOR_AMBOS = '#64748b';
+const etiquetaTodos = () => (S.miembros.length === 2 ? 'Los dos' : 'Todos');
+const colorEv = (ev) => (ev.compartido ? COLOR_AMBOS : colorDe(ev.owner_id));
+const eventoVisible = (e) => e.compartido || S.capas.has(e.owner_id);
 const puedeEditarCapa = (ownerId) => ownerId === S.user.id || S.relacion === 'pareja';
 const editables = () => S.miembros.filter((m) => puedeEditarCapa(m.id));
 const visiblesCapas = () => S.miembros.filter((m) => S.capas.has(m.id));
@@ -252,16 +259,50 @@ function vistaActual() {
 }
 
 // ---------- piezas comunes ----------
-function filaEvento({ ev, fecha }) {
-  const m = miembro(ev.owner_id) || { nombre: '?', color: '#888888' };
+function filaEvento({ ev, fecha }, compacta = false) {
+  const m = ev.compartido ? { nombre: etiquetaTodos(), color: COLOR_AMBOS } : (miembro(ev.owner_id) || { nombre: '?', color: '#888888' });
   const t = TIPOS.find((x) => x.id === ev.tipo);
   const hora = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : 'Todo el día';
-  return el('button', { type: 'button', class: 'fila-evento', style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
+  return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
     el('span', { class: 'hora' }, hora),
     el('span', { class: 'cuerpo' },
       el('span', { class: 'tit' }, `${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: 'Se repite cada semana' }, ' ↻') : null),
       ev.notas ? el('span', { class: 'notas' }, ev.notas) : null),
-    S.miembros.length > 1 ? el('span', { class: 'quien' }, m.nombre) : null);
+    S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
+}
+
+// Lista de eventos de un día: en una columna, o (opción de Más) en una columna por persona, con los de
+// "todos" a todo el ancho, y cada tramo horario en su propia fila.
+function agendaEventos(lista, vacio) {
+  if (!lista.length) return el('p', { class: 'vacio' }, vacio);
+  const cols = visiblesCapas();
+  if (S.vista !== 'columnas' || cols.length < 2 || cols.length > 3) return lista.map((x) => filaEvento(x));
+  const hora = (x) => (x.ev.hora_inicio ? hhmm(x.ev.hora_inicio) : '');
+  const horas = [...new Set(lista.map(hora))].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+  return el('div', { class: 'agenda-cols', style: { '--n': cols.length } },
+    el('div', { class: 'cols-fila cols-cab' }, cols.map((m) => el('span', { class: 'cols-nombre', style: { '--c': m.color } }, el('span', { class: 'punto' }), m.nombre))),
+    horas.map((h) => {
+      const delTramo = lista.filter((x) => hora(x) === h);
+      const comunes = delTramo.filter((x) => x.ev.compartido);
+      const sueltos = delTramo.filter((x) => !x.ev.compartido);
+      return el('div', { class: 'cols-tramo' },
+        comunes.map((x) => filaEvento(x, true)),
+        sueltos.length
+          ? el('div', { class: 'cols-fila' }, cols.map((m) => el('div', { class: 'cols-celda' },
+            sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => filaEvento(x, true)))))
+          : null);
+    }));
+}
+
+function chipsTipos(set, clave) {
+  return el('div', { class: 'chips tipos', role: 'group', 'aria-label': 'Tipos de evento' },
+    TIPOS.map((t) => el('button', {
+      type: 'button', class: 'chip-tipo', 'aria-pressed': String(set.has(t.id)),
+      onclick: () => {
+        if (set.has(t.id)) { if (set.size > 1) set.delete(t.id); } else set.add(t.id);
+        guardarLocal(clave, [...set]); render();
+      },
+    }, `${t.icono} ${t.nombre}`)));
 }
 
 function bloquePersonaMenu(fecha, m) {
@@ -292,8 +333,8 @@ function vistaInicio() {
   const manana = sumarDias(hoy, 1);
   const esManana = S.inicioDia === 'manana';
   const dia = esManana ? manana : hoy;
-  const mapa = expandirEventos(S.eventos.filter((e) => S.capas.has(e.owner_id)), hoy, manana);
-  const delDia = mapa.get(dia) || [];
+  const mapa = expandirEventos(S.eventos.filter(eventoVisible), hoy, manana);
+  const delDia = (mapa.get(dia) || []).filter((x) => S.tiposInicio.has(x.ev.tipo));
   const tareasHoy = (mapa.get(hoy) || []).filter((x) => x.ev.tipo === 'tarea');
 
   return el('div', {},
@@ -306,11 +347,12 @@ function vistaInicio() {
       el('button', { class: 'primario', onclick: () => { S.tab = 'mas'; render(); } }, 'Invitar a tu pareja')) : null,
     esManana ? el('section', { class: 'seccion preparar' },
       el('h3', {}, '🛠️ Para dejar preparado hoy'),
-      tareasHoy.length ? tareasHoy.map(filaEvento) : el('p', { class: 'vacio' }, 'Nada que preparar hoy.')) : null,
+      agendaEventos(tareasHoy, 'Nada que preparar hoy.')) : null,
     bloqueMenuDia(dia, `🍽️ Comida de ${esManana ? 'mañana' : 'hoy'}`),
     el('section', { class: 'seccion' },
       el('h3', {}, `🗓️ Agenda de ${esManana ? 'mañana' : 'hoy'}`),
-      delDia.length ? delDia.map(filaEvento) : el('p', { class: 'vacio' }, 'Nada planificado.')));
+      chipsTipos(S.tiposInicio, 'tipos_inicio'),
+      agendaEventos(delDia, 'Nada planificado.')));
 }
 
 // ---------- vista: Calendario ----------
@@ -319,7 +361,7 @@ function vistaCalendario() {
   const hoy = hoyISO();
   const semanas = rejillaMes(y, m);
   const desde = semanas[0][0], hasta = semanas[semanas.length - 1][6];
-  const filtrados = S.eventos.filter((e) => S.capas.has(e.owner_id) && S.tipos.has(e.tipo));
+  const filtrados = S.eventos.filter((e) => eventoVisible(e) && S.tipos.has(e.tipo));
   const mapa = expandirEventos(filtrados, desde, hasta);
   const delDia = mapa.get(S.diaSel) || [];
 
@@ -338,14 +380,7 @@ function vistaCalendario() {
       el('button', { type: 'button', class: 'pequeno', onclick: () => {
         S.mes = { y: Number(hoy.slice(0, 4)), m: Number(hoy.slice(5, 7)) }; S.diaSel = hoy; cargarVista();
       } }, 'Hoy')),
-    el('div', { class: 'chips tipos', role: 'group', 'aria-label': 'Tipos de evento' },
-      TIPOS.map((t) => el('button', {
-        type: 'button', class: 'chip-tipo', 'aria-pressed': String(S.tipos.has(t.id)),
-        onclick: () => {
-          if (S.tipos.has(t.id)) { if (S.tipos.size > 1) S.tipos.delete(t.id); } else S.tipos.add(t.id);
-          guardarLocal('tipos', [...S.tipos]); render();
-        },
-      }, `${t.icono} ${t.nombre}`))),
+    chipsTipos(S.tipos, 'tipos'),
     el('div', { class: 'mes', role: 'grid' },
       ['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((d) => el('div', { class: 'cab-dia', role: 'columnheader' }, d)),
       semanas.flat().map((dia) => {
@@ -358,12 +393,12 @@ function vistaCalendario() {
           onclick: () => { S.diaSel = dia; render(); },
         },
           el('span', { class: 'num' }, Number(dia.slice(8))),
-          lista.slice(0, 3).map(({ ev }) => el('span', { class: 'chip', style: { '--c': colorDe(ev.owner_id) } }, ev.titulo)),
+          lista.slice(0, 3).map(({ ev }) => el('span', { class: 'chip', style: { '--c': colorEv(ev) } }, ev.titulo)),
           lista.length > 3 ? el('span', { class: 'mas' }, `+${lista.length - 3}`) : null);
       })),
     el('section', { class: 'agenda' },
       el('h2', { class: 'fecha-grande' }, cap(fechaLarga(S.diaSel))),
-      delDia.length ? delDia.map(filaEvento) : el('p', { class: 'vacio' }, 'Nada planificado este día.'),
+      agendaEventos(delDia, 'Nada planificado este día.'),
       bloqueMenuDia(S.diaSel, '🍽️ Comida')));
 }
 
@@ -420,6 +455,9 @@ function vistaMas() {
   const temaSel = el('select', { 'aria-label': 'Aspecto', onchange: () => { guardarLocal('tema', temaSel.value); aplicarTema(); } },
     [['auto', 'Automático (como tu móvil)'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([v, n]) => el('option', { value: v, selected: leerLocal('tema', 'auto') === v }, n)));
 
+  const vistaSel = el('select', { 'aria-label': 'Cómo se ve la agenda', onchange: () => { S.vista = vistaSel.value; guardarLocal('vista', S.vista); } },
+    [['lista', 'Lista (una sola columna)'], ['columnas', 'Una columna por persona']].map(([v, n]) => el('option', { value: v, selected: S.vista === v }, n)));
+
   return el('div', { class: 'mas' },
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Tú'),
@@ -464,6 +502,7 @@ function vistaMas() {
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'La app'),
       el('label', {}, 'Aspecto', temaSel),
+      el('label', {}, 'Cómo se ve la agenda', vistaSel),
       botonInstalar(),
       el('div', { class: 'fila-botones' },
         el('button', { onclick: async () => {
@@ -523,7 +562,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const nuevo = !ev;
   const editable = nuevo || puedeEditarCapa(ev.owner_id);
   let tipo = ev?.tipo || 'plan';
-  const owners = new Set([ev ? ev.owner_id : S.user.id]);
+  let para = ev ? (ev.compartido ? 'todos' : ev.owner_id) : S.user.id; // id de persona o 'todos'
 
   const tipoBtns = TIPOS.map((t) => el('button', {
     type: 'button', class: 'tipo-btn', 'aria-pressed': String(t.id === tipo), disabled: !editable,
@@ -540,18 +579,16 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
   const notasIn = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Notas (opcional)', disabled: !editable, 'aria-label': 'Notas', value: ev?.notas || '' });
 
-  let quienUI = null, ownerSel = null;
-  if (nuevo && editables().length > 1) {
-    quienUI = el('div', { class: 'quien-lista' }, el('span', { class: 'etq' }, 'Para'),
-      editables().map((m) => el('label', { class: 'check', style: { '--c': m.color } },
-        el('input', { type: 'checkbox', checked: owners.has(m.id), onchange: (e) => {
-          if (e.target.checked) owners.add(m.id); else owners.delete(m.id);
-        } }), el('span', { class: 'punto' }), m.nombre)));
-  } else if (!nuevo && S.miembros.length > 1) {
+  let quienUI = null;
+  if (S.miembros.length > 1) {
     if (editable) {
-      ownerSel = el('select', { 'aria-label': 'De quién es' }, editables().map((m) => el('option', { value: m.id, selected: m.id === ev.owner_id }, m.nombre)));
-      quienUI = el('label', {}, 'De', ownerSel);
-    } else quienUI = el('p', {}, el('span', { class: 'etq' }, 'De '), (miembro(ev.owner_id) || { nombre: '?' }).nombre);
+      const opciones = [...editables().map((m) => ({ id: m.id, nombre: m.nombre, color: m.color })), { id: 'todos', nombre: etiquetaTodos(), color: COLOR_AMBOS }];
+      const paraBtns = opciones.map((o) => el('button', {
+        type: 'button', class: 'chip-capa', 'aria-pressed': String(o.id === para), style: { '--c': o.color },
+        onclick: () => { para = o.id; paraBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(opciones[i].id === para))); },
+      }, el('span', { class: 'punto' }), o.nombre));
+      quienUI = el('div', { class: 'quien-lista' }, el('span', { class: 'etq' }, 'Para'), el('div', { class: 'chips' }, paraBtns));
+    } else quienUI = el('p', {}, el('span', { class: 'etq' }, 'De '), ev.compartido ? etiquetaTodos() : (miembro(ev.owner_id) || { nombre: '?' }).nombre);
   }
 
   const guardar = (btn) => {
@@ -562,14 +599,15 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     if (hf && !hi) return aviso('Si pones hora de fin, pon también la de inicio.', true);
     if (hi && hf && hf < hi) return aviso('La hora de fin es anterior a la de inicio.', true);
     if (rep && hasta && hasta < f) return aviso('«Repetir hasta» es anterior a la fecha.', true);
-    if (nuevo && !owners.size) return aviso('Elige para quién es.', true);
     const campos = {
       tipo, titulo: t, fecha: f, hora_inicio: hi || null, hora_fin: hf || null,
       notas: notasIn.value.trim() || null, repeticion: rep || null, repite_hasta: rep && hasta ? hasta : null,
+      compartido: para === 'todos',
     };
+    const owner = para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para;
     return conCarga(btn, async () => {
-      if (nuevo) await D.crearEventos([...owners].map((o) => ({ ...campos, espacio_id: S.espacio.id, owner_id: o, creado_por: S.user.id })));
-      else await D.guardarEvento(ev.id, { ...campos, owner_id: ownerSel ? ownerSel.value : ev.owner_id });
+      if (nuevo) await D.crearEventos([{ ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id }]);
+      else await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
       cerrar(); aviso('Guardado'); await cargarVista(true);
     });
   };

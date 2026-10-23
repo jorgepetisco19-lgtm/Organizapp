@@ -192,3 +192,14 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .cab-titulo { display: flex; align-items: center; gap: 8px; }
 .logo-cab { width: 32px; height: 32px; border-radius: 8px; flex: none; }
 .version { font-size: .72rem; color: var(--suave); border: 1px solid var(--borde); border-radius: 999px; padding: 1px 8px; background: var(--superficie); }
+
+/* agenda en columnas (una por persona; los eventos de todos ocupan todo el ancho) */
+.agenda-cols { margin: 6px 0; }
+.cols-fila { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 8px; }
+.cols-cab { margin-bottom: 2px; }
+.cols-nombre { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: .92rem; padding: 4px 2px; border-bottom: 3px solid var(--c); }
+.cols-tramo { margin: 2px 0; }
+.cols-celda { min-width: 0; }
+.fila-evento.compacta { display: block; padding: 6px 8px; margin: 4px 0; min-height: 0; }
+.fila-evento.compacta .hora { display: block; font-size: .8rem; }
+.fila-evento.compacta .tit { font-size: .92rem; }
