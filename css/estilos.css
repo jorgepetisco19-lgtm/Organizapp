@@ -252,3 +252,16 @@ body.arrastrando { overscroll-behavior: contain; }
 .amigo-resultado .amigo-fila { padding: .5rem .6rem; border-radius: 10px; background: color-mix(in srgb, var(--suave) 12%, transparent); }
 .tabs .ico { position: relative; display: inline-block; }
 .punto-aviso { position: absolute; top: -2px; right: -8px; width: 10px; height: 10px; border-radius: 50%; background: #ef4444; border: 2px solid var(--superficie); box-sizing: content-box; }
+
+/* ---- varios calendarios ---- */
+.selector-cab { display: none; }
+.selector-cal { display: inline-flex; align-items: center; gap: .35rem; max-width: 100%; margin: .1rem 0 .35rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--borde); background: var(--superficie); color: var(--texto); font: inherit; font-size: .92rem; font-weight: 600; cursor: pointer; }
+.selector-cal .sc-nombre { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selector-cal .sc-flecha { color: var(--suave); font-size: .8rem; }
+.punto-aviso.en-linea { position: static; display: inline-block; flex: none; }
+.lista-cals { list-style: none; margin: 0 0 .8rem; padding: 0; display: grid; gap: .4rem; }
+.fila-cal { display: flex; align-items: center; gap: .6rem; width: 100%; text-align: left; padding: .65rem .8rem; border-radius: 12px; border: 1px solid var(--borde); background: var(--superficie); color: var(--texto); font: inherit; cursor: pointer; }
+.fila-cal[aria-current="true"] { border-color: var(--acento); box-shadow: inset 0 0 0 1px var(--acento); }
+.fila-cal .fc-nombre { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tarjeta.resaltada { border-color: var(--acento); box-shadow: inset 0 0 0 1px var(--acento); }
+.bloque { margin-top: .9rem; padding-top: .8rem; border-top: 1px solid color-mix(in srgb, var(--suave) 22%, transparent); display: grid; gap: .5rem; }

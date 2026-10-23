@@ -97,30 +97,80 @@ var supabase = (function () {
     },
     crear_espacio({ p_nombre }) {
       const u = sesionActual(); const db = cargar();
-      if (db.miembros.some((m) => m.user_id === u.id)) return err('Ya perteneces a un calendario');
-      const e = { id: uuid(), nombre: p_nombre, creado_por: u.id };
-      db.espacios.push(e); db.miembros.push({ espacio_id: e.id, user_id: u.id, relacion: 'pareja' }); guardar(db);
+      if (db.miembros.filter((m) => m.user_id === u.id).length >= 20) return err('Has llegado al máximo de 20 calendarios.');
+      const e = { id: uuid(), nombre: String(p_nombre || '').trim() || 'Nuestro calendario', creado_por: u.id };
+      const mio = db.perfiles.find((p) => p.id === u.id);
+      db.espacios.push(e); db.miembros.push({ espacio_id: e.id, user_id: u.id, relacion: 'pareja', color: mio.color, unido: new Date().toISOString() }); guardar(db);
       return { data: e.id, error: null };
     },
     mis_invitaciones() {
       const u = sesionActual(); const db = cargar();
-      return { data: db.invitaciones.filter((i) => i.email === u.email).map((i) => ({
+      return { data: db.invitaciones.filter((i) => i.email === u.email || i.para_user === u.id).map((i) => ({
         id: i.id, espacio_nombre: db.espacios.find((e) => e.id === i.espacio_id).nombre,
         de_nombre: (db.perfiles.find((p) => p.id === i.creada_por) || { nombre: 'Alguien' }).nombre, relacion: i.relacion })), error: null };
     },
     aceptar_invitacion({ p_id }) {
       const u = sesionActual(); const db = cargar();
-      const inv = db.invitaciones.find((i) => i.id === p_id && i.email === u.email);
+      const inv = db.invitaciones.find((i) => i.id === p_id && (i.email === u.email || i.para_user === u.id));
       if (!inv) return err('Invitación no válida');
-      if (db.miembros.some((m) => m.user_id === u.id)) return err('Ya perteneces a un calendario');
+      if (db.miembros.some((m) => m.espacio_id === inv.espacio_id && m.user_id === u.id)) { db.invitaciones = db.invitaciones.filter((i) => i.id !== inv.id); guardar(db); return { data: inv.espacio_id, error: null }; }
       if (db.miembros.filter((m) => m.espacio_id === inv.espacio_id).length >= 5) return err('Este calendario ya tiene 5 personas');
-      db.miembros.push({ espacio_id: inv.espacio_id, user_id: u.id, relacion: inv.relacion });
-      db.invitaciones = db.invitaciones.filter((i) => i.id !== inv.id);
       const mios = db.perfiles.find((p) => p.id === u.id);
-      const usados = db.miembros.filter((m) => m.espacio_id === inv.espacio_id && m.user_id !== u.id).map((m) => db.perfiles.find((p) => p.id === m.user_id).color);
-      if (usados.includes(mios.color)) mios.color = PALETA.find((c) => !usados.includes(c));
+      const usados = db.miembros.filter((m) => m.espacio_id === inv.espacio_id).map((m) => m.color);
+      const color = usados.includes(mios.color) ? PALETA.find((c) => !usados.includes(c)) : mios.color;
+      db.miembros.push({ espacio_id: inv.espacio_id, user_id: u.id, relacion: inv.relacion, color, unido: new Date().toISOString() });
+      db.invitaciones = db.invitaciones.filter((i) => i.id !== inv.id);
       guardar(db);
       return { data: inv.espacio_id, error: null };
+    },
+    rechazar_invitacion({ p_id }) {
+      const u = sesionActual(); const db = cargar();
+      db.invitaciones = db.invitaciones.filter((i) => !(i.id === p_id && (i.email === u.email || i.para_user === u.id))); guardar(db);
+      return { data: null, error: null };
+    },
+    invitaciones_enviadas({ p_espacio }) {
+      const u = sesionActual(); const db = cargar();
+      if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return { data: [], error: null };
+      return { data: db.invitaciones.filter((i) => i.espacio_id === p_espacio).map((i) => ({
+        id: i.id, destino: i.email || db.perfiles.find((p) => p.id === i.para_user).nombre, relacion: i.relacion, creada: i.creada, es_amigo: !!i.para_user })), error: null };
+    },
+    invitar_amigo({ p_espacio, p_amigo, p_relacion }) {
+      const u = sesionActual(); const db = cargar(); db.amistades = db.amistades || [];
+      if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return err('No tienes permiso en este calendario.');
+      if (!db.amistades.some((a) => a.estado === 'aceptada' && ((a.de === u.id && a.para === p_amigo) || (a.de === p_amigo && a.para === u.id)))) return err('Solo puedes invitar a tus amigos.');
+      if (db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === p_amigo)) return err('Ya está en este calendario.');
+      if (db.invitaciones.some((i) => i.espacio_id === p_espacio && i.para_user === p_amigo)) return err('Ya le invitaste a este calendario.');
+      const n = { id: uuid(), espacio_id: p_espacio, email: null, para_user: p_amigo, relacion: p_relacion, creada_por: u.id, creada: new Date().toISOString() };
+      db.invitaciones.push(n); guardar(db); return { data: n.id, error: null };
+    },
+    renombrar_espacio({ p_espacio, p_nombre }) {
+      const u = sesionActual(); const db = cargar();
+      if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return err('No tienes permiso en este calendario.');
+      db.espacios.find((e) => e.id === p_espacio).nombre = String(p_nombre).trim(); guardar(db); return { data: null, error: null };
+    },
+    quitar_miembro({ p_espacio, p_user }) {
+      const u = sesionActual(); const db = cargar();
+      if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return err('No tienes permiso en este calendario.');
+      return limpiar(db, p_espacio, p_user);
+    },
+    salir_espacio({ p_espacio }) {
+      const u = sesionActual(); const db = cargar();
+      if (db.espacios.find((e) => e.id === p_espacio)?.creado_por === u.id) return err('Creaste este calendario: puedes borrarlo, pero no salir de él.');
+      return limpiar(db, p_espacio, u.id);
+    },
+    eliminar_espacio({ p_espacio }) {
+      const u = sesionActual(); const db = cargar();
+      const e = db.espacios.find((x) => x.id === p_espacio && x.creado_por === u.id);
+      if (!e) return err('Solo quien creó el calendario puede borrarlo.');
+      db.espacios = db.espacios.filter((x) => x.id !== p_espacio);
+      for (const t of ['miembros', 'invitaciones', 'eventos', 'menu']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
+      guardar(db); return { data: null, error: null };
+    },
+    cambiar_mi_color({ p_espacio, p_color }) {
+      const u = sesionActual(); const db = cargar();
+      const m = db.miembros.find((x) => x.espacio_id === p_espacio && x.user_id === u.id);
+      if (!m) return err('No estás en ese calendario.');
+      m.color = p_color; db.perfiles.find((p) => p.id === u.id).color = p_color; guardar(db); return { data: null, error: null };
     },
     // --- amigos (réplica simple de las funciones de Postgres; las reglas reales se prueban en rls_test.mjs) ---
     buscar_codigo({ p_codigo }) {
@@ -172,13 +222,18 @@ var supabase = (function () {
       const p = db.perfiles.find((x) => x.id === u.id); p.codigo_amigo = codigoNuevo(); guardar(db);
       return { data: p.codigo_amigo, error: null };
     },
-    rechazar_invitacion({ p_id }) {
-      const u = sesionActual(); const db = cargar();
-      db.invitaciones = db.invitaciones.filter((i) => !(i.id === p_id && i.email === u.email)); guardar(db);
-      return { data: null, error: null };
-    },
   };
 
+  function limpiar(db, esp, quien) {
+    const creador = db.espacios.find((e) => e.id === esp)?.creado_por;
+    if (creador === quien) return err('No se puede quitar a quien creó el calendario.');
+    if (!db.miembros.some((m) => m.espacio_id === esp && m.user_id === quien)) return err('Esa persona no está en el calendario.');
+    db.eventos.forEach((e) => { if (e.espacio_id === esp && e.owner_id === quien && e.compartido) e.owner_id = creador; });
+    db.eventos = db.eventos.filter((e) => !(e.espacio_id === esp && e.owner_id === quien));
+    db.menu = db.menu.filter((f) => !(f.espacio_id === esp && f.owner_id === quien));
+    db.miembros = db.miembros.filter((m) => !(m.espacio_id === esp && m.user_id === quien));
+    guardar(db); return { data: null, error: null };
+  }
   const avisar = (evento) => { const s = sesionActual(); setTimeout(() => oyentes.forEach((cb) => cb(evento, s ? { user: s } : null)), 0); };
 
   return {

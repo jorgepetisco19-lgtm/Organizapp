@@ -80,8 +80,6 @@ ok('Jorge crea su perfil', !r.error, r.error);
 r = await q(`select public.crear_espacio('Casa') as id`);
 ok('Jorge crea el calendario', !r.error && r.rows[0].id, r.error);
 const esp1 = r.rows[0]?.id;
-r = await q(`select public.crear_espacio('Otro') as id`);
-ok('Jorge no puede crear un segundo calendario', falla(r, 'Ya perteneces'), r.error);
 
 r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,hora_fin,creado_por)
              values ($1,$2,'deporte','Pádel','2026-10-27','18:30','19:30',$2) returning id`, [esp1, U.jorge.id]);
@@ -171,9 +169,10 @@ r = await q(`select * from public.eventos`);
 ok('Paula ve el evento de Jorge', !r.error && r.rows.length === 1, r.error);
 r = await q(`select * from public.menu`);
 ok('Paula ve el menú de Jorge', !r.error && r.rows.length === 1, r.error);
-r = await q(`select id, color from public.perfiles order by nombre`);
+r = await q(`select id from public.perfiles order by nombre`);
 ok('Paula ve los dos perfiles', !r.error && r.rows.length === 2, r.error || r.rows.length);
-ok('Los colores de Jorge y Paula son distintos', r.rows.length === 2 && r.rows[0].color !== r.rows[1].color, JSON.stringify(r.rows));
+r = await q(`select user_id, color from public.miembros where espacio_id=$1`, [esp1]);
+ok('Los colores de Jorge y Paula en el calendario son distintos', r.rows.length === 2 && r.rows[0].color !== r.rows[1].color, JSON.stringify(r.rows));
 r = await q(`update public.eventos set titulo='Pádel (editado por Paula)' where id=$1 returning id`, [evJorge]);
 ok('Paula (pareja) puede editar eventos de Jorge', !r.error && r.rows.length === 1, r.error);
 r = await q(`update public.menu set texto='Crema de calabaza' where id=$1 returning id`, [menuJorge]);
@@ -448,6 +447,197 @@ try { await viejo.exec(mig); await viejo.exec(mig); } catch (e) { errMig = e.mes
 ok('La migración se aplica dos veces sin errores', !errMig, errMig);
 const cs = (await viejo.query('select codigo_amigo from public.perfiles')).rows.map((x) => x.codigo_amigo);
 ok('Las personas que ya existían reciben código, distinto cada una', cs.length === 2 && cs.every((c) => ALFABETO.test(c)) && cs[0] !== cs[1], JSON.stringify(cs));
+
+// ---------- 10. Varios calendarios por persona ----------
+console.log('\n10. Varios calendarios por persona');
+await db.exec('reset role');
+const cods = Object.fromEntries((await db.query('select id, codigo_amigo from public.perfiles')).rows.map((x) => [x.id, x.codigo_amigo]));
+// Jorge y Tercero se hacen amigos
+await como(U.jorge);
+r = await q(`select public.pedir_amistad($1)`, [cods[U.tercero.id]]);
+await como(U.tercero);
+r = await q(`select id from public.mis_amistades() where estado='pendiente' and direccion='recibida'`);
+await q(`select public.responder_amistad($1, true)`, [r.rows[0].id]);
+
+await como(U.jorge);
+r = await q(`select public.crear_espacio('Personal') as id`);
+ok('Jorge puede crear un segundo calendario (solo para él)', !r.error && r.rows[0].id, r.error);
+const espP = r.rows[0]?.id;
+r = await q(`select espacio_id, relacion, color from public.miembros where user_id=$1 order by unido`, [U.jorge.id]);
+ok('Jorge está en dos calendarios', r.rows.length === 2 && r.rows.every((x) => x.relacion === 'pareja'), JSON.stringify(r.rows));
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'compromiso','Cosa privada','2026-10-30',$2)`, [espP, U.jorge.id]);
+
+await como(U.paula);
+r = await q(`select id from public.espacios`);
+ok('Paula solo ve el calendario compartido, no el personal de Jorge', r.rows.length === 1 && r.rows[0].id === esp1, JSON.stringify(r.rows));
+r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
+ok('Paula no ve los eventos del calendario personal', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','Intruso','2026-10-30',$3)`, [espP, U.jorge.id, U.paula.id]);
+ok('Paula no puede escribir en el calendario personal de Jorge', !!r.error);
+r = await q(`select public.invitar_amigo($1,$2,'amigo')`, [espP, U.amigo.id]);
+ok('Quien no es pareja de ese calendario no puede invitar a nadie a él', falla(r, 'No tienes permiso'), r.error);
+r = await q(`select * from public.invitaciones_enviadas($1)`, [espP]);
+ok('Y no ve sus invitaciones enviadas', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`select public.renombrar_espacio($1,'Hackeado')`, [espP]);
+ok('Y no puede renombrarlo', falla(r, 'No tienes permiso'), r.error);
+r = await q(`select public.eliminar_espacio($1)`, [espP]);
+ok('Y no puede borrarlo', falla(r, 'Solo quien creó'), r.error);
+
+await como(U.jorge);
+r = await q(`select public.invitar_amigo($1,$2,'amigo')`, [espP, extra[0].id]);
+ok('Jorge no puede invitar a alguien que no es su amigo', falla(r, 'tus amigos'), r.error);
+r = await q(`insert into public.invitaciones(espacio_id,para_user,relacion,creada_por) values ($1,$2,'amigo',$3)`, [espP, U.tercero.id, U.jorge.id]);
+ok('No se puede saltar la comprobación de amistad insertando directamente', !!r.error);
+r = await q(`select public.invitar_amigo($1,$2,'jefe')`, [espP, U.tercero.id]);
+ok('Un rol inventado se rechaza', falla(r, 'Rol no válido'), r.error);
+r = await q(`select public.invitar_amigo($1,$2,'amigo') as id`, [espP, U.tercero.id]);
+ok('Jorge invita a su amigo Tercero con rol amigo', !r.error && r.rows[0].id, r.error);
+const invT = r.rows[0]?.id;
+r = await q(`select public.invitar_amigo($1,$2,'amigo')`, [espP, U.tercero.id]);
+ok('No se puede invitar dos veces', falla(r, 'Ya le invitaste'), r.error);
+r = await q(`select * from public.invitaciones_enviadas($1)`, [espP]);
+ok('Jorge ve la invitación enviada con el nombre del amigo (sin correo)', r.rows.length === 1 && r.rows[0].destino === 'Tercero' && r.rows[0].es_amigo === true, JSON.stringify(r.rows));
+r = await q(`select public.invitar_amigo($1,$2,'amigo')`, [esp1, U.tercero.id]);
+ok('El calendario con 5 personas no admite más invitaciones', falla(r, '5 personas'), r.error);
+
+await como(U.paula);
+r = await q(`select * from public.mis_invitaciones()`);
+ok('Paula no ve invitaciones ajenas', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`select public.aceptar_invitacion($1)`, [invT]);
+ok('Paula no puede aceptar la invitación de otra persona', falla(r, 'no válida'), r.error);
+r = await q(`select public.rechazar_invitacion($1)`, [invT]);
+await como(U.jorge);
+r = await q(`select * from public.invitaciones_enviadas($1)`, [espP]);
+ok('Y tampoco puede rechazarla por otro', r.rows.length === 1, JSON.stringify(r.rows));
+
+await como(U.tercero);
+r = await q(`select * from public.mis_invitaciones()`);
+ok('Tercero ve la invitación de Jorge', r.rows.length === 1 && r.rows[0].espacio_nombre === 'Personal' && r.rows[0].de_nombre === 'Jorge' && r.rows[0].relacion === 'amigo', JSON.stringify(r.rows));
+r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
+ok('Con la invitación pendiente todavía no ve nada del calendario', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`select public.aceptar_invitacion($1) as id`, [invT]);
+ok('Tercero acepta (aunque ya tiene su propio calendario)', !r.error && r.rows[0].id === espP, r.error);
+r = await q(`select espacio_id, relacion, color from public.miembros where user_id=$1`, [U.tercero.id]);
+ok('Tercero está ahora en dos calendarios', r.rows.length === 2, JSON.stringify(r.rows));
+r = await q(`select user_id, color from public.miembros where espacio_id=$1`, [espP]);
+ok('En el calendario compartido los colores no se repiten', r.rows.length === 2 && r.rows[0].color !== r.rows[1].color, JSON.stringify(r.rows));
+r = await q(`select public.aceptar_invitacion($1)`, [invT]);
+ok('La invitación no se puede usar dos veces', falla(r, 'no válida'), r.error);
+r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
+ok('Ahora ve los eventos del calendario', r.rows.length === 1, r.error || r.rows.length);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','Mío','2026-10-31',$2) returning id`, [espP, U.tercero.id]);
+ok('Con rol amigo puede escribir en su propia capa', !r.error && r.rows.length === 1, r.error);
+const evT = r.rows[0]?.id;
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values ($1,$2,'plan','De todos','2026-10-31',true,$2) returning id`, [espP, U.tercero.id]);
+const evTodos = r.rows[0]?.id;
+r = await q(`update public.eventos set titulo='Cambiado' where espacio_id=$1 and owner_id=$2`, [espP, U.jorge.id]);
+ok('Con rol amigo NO puede editar la capa de Jorge', !r.error && r.n === 0, r.error || r.n);
+r = await q(`select public.invitar_amigo($1,$2,'amigo')`, [espP, U.amigo.id]);
+ok('Con rol amigo no puede invitar', falla(r, 'No tienes permiso'), r.error);
+r = await q(`select public.renombrar_espacio($1,'X')`, [espP]);
+ok('Con rol amigo no puede renombrar', falla(r, 'No tienes permiso'), r.error);
+r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.jorge.id]);
+ok('Con rol amigo no puede quitar a nadie', falla(r, 'No tienes permiso'), r.error);
+r = await q(`select public.eliminar_espacio($1)`, [espP]);
+ok('Con rol amigo no puede borrar el calendario', falla(r, 'Solo quien creó'), r.error);
+r = await q(`select public.cambiar_mi_color($1,'#ef4444')`, [espP]);
+ok('Tercero cambia su color en el calendario compartido', !r.error, r.error);
+r = await q(`select espacio_id, color from public.miembros where user_id=$1`, [U.tercero.id]);
+ok('El cambio solo afecta a ese calendario', r.rows.find((x) => x.espacio_id === espP).color === '#ef4444' && r.rows.find((x) => x.espacio_id !== espP).color !== '#ef4444', JSON.stringify(r.rows));
+r = await q(`select public.cambiar_mi_color($1,'rojo')`, [espP]);
+ok('Un color mal formado se rechaza', falla(r, 'Color no válido'), r.error);
+r = await q(`select public.cambiar_mi_color($1,'#ef4444')`, [esp1]);
+ok('No se puede cambiar el color en un calendario ajeno', falla(r, 'No estás'), r.error);
+r = await q(`update public.miembros set relacion='pareja' where user_id=$1`, [U.tercero.id]);
+ok('Nadie se sube el rol a sí mismo (miembros no se escribe directamente)', falla(r, 'permission denied'), r.error);
+
+await como(U.jorge);
+r = await q(`update public.eventos set titulo='Editado por Jorge' where id=$1 returning id`, [evT]);
+ok('Jorge (pareja) sí edita la capa de Tercero', r.rows.length === 1, r.error);
+r = await q(`select public.renombrar_espacio($1,'  Mi agenda  ')`, [espP]);
+ok('Jorge renombra su calendario', !r.error, r.error);
+r = await q(`select nombre from public.espacios where id=$1`, [espP]);
+ok('El nombre queda recortado', r.rows[0]?.nombre === 'Mi agenda', JSON.stringify(r.rows));
+r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.jorge.id]);
+ok('No puedes quitarte a ti mismo con «quitar»', falla(r, 'Salir del calendario'), r.error);
+r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.paula.id]);
+ok('No se puede quitar a quien no está', falla(r, 'no está'), r.error);
+r = await q(`select public.salir_espacio($1)`, [espP]);
+ok('Quien creó el calendario no puede «salir» (solo borrarlo)', falla(r, 'Creaste'), r.error);
+r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.tercero.id]);
+ok('Jorge quita a Tercero del calendario', !r.error, r.error);
+r = await q(`select titulo, owner_id from public.eventos where espacio_id=$1 order by titulo`, [espP]);
+ok('Los eventos propios de Tercero desaparecen y los «de todos» pasan a Jorge', r.rows.length === 2 && r.rows.some((x) => x.titulo === 'De todos' && x.owner_id === U.jorge.id) && r.rows.some((x) => x.titulo === 'Cosa privada') && !r.rows.some((x) => x.titulo.includes('Mío') || x.titulo.includes('Editado')), JSON.stringify(r.rows));
+await como(U.tercero);
+r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
+ok('Tercero ya no ve nada de ese calendario', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`select count(*)::int n from public.espacios`);
+ok('Y conserva su propio calendario', r.rows[0].n === 1, JSON.stringify(r.rows));
+
+// invitar con rol pareja, y salir por voluntad propia
+await como(U.jorge);
+r = await q(`select public.invitar_amigo($1,$2,'pareja') as id`, [espP, U.tercero.id]);
+const invT2 = r.rows[0]?.id;
+await como(U.tercero);
+r = await q(`select public.aceptar_invitacion($1)`, [invT2]);
+ok('Tercero vuelve a entrar, esta vez con rol pareja', !r.error, r.error);
+r = await q(`update public.eventos set titulo='Editado por Tercero' where espacio_id=$1 and owner_id=$2 returning id`, [espP, U.jorge.id]);
+ok('Con rol pareja sí edita la capa de Jorge', r.rows.length >= 1, r.error);
+r = await q(`select public.salir_espacio($1)`, [espP]);
+ok('Tercero sale por su cuenta', !r.error, r.error);
+r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
+ok('Y ya no ve el calendario', r.rows.length === 0, r.error);
+r = await q(`select public.salir_espacio($1)`, [espP]);
+ok('Salir de uno en el que no estás da error', falla(r, 'No estás'), r.error);
+
+// borrar
+await como(U.paula);
+r = await q(`select public.eliminar_espacio($1)`, [esp1]);
+ok('Paula (pareja pero no creadora) no puede borrar el calendario compartido', falla(r, 'Solo quien creó'), r.error);
+await como(U.jorge);
+r = await q(`select public.eliminar_espacio($1)`, [espP]);
+ok('Jorge borra su calendario personal', !r.error, r.error);
+await db.exec('reset role');
+r = await q(`select (select count(*)::int from public.eventos where espacio_id=$1) e, (select count(*)::int from public.miembros where espacio_id=$1) m`, [espP]);
+ok('Con él desaparecen sus eventos y miembros', r.rows[0].e === 0 && r.rows[0].m === 0, JSON.stringify(r.rows));
+
+// tope de 20 calendarios
+await como(U.jorge);
+let creados = 0, ultimo20;
+for (let i = 0; i < 25; i++) { ultimo20 = await q(`select public.crear_espacio('C'||$1::text)`, [i]); if (!ultimo20.error) creados++; else break; }
+r = await q(`select count(*)::int n from public.miembros where user_id=$1`, [U.jorge.id]);
+ok('Tope de 20 calendarios por persona', r.rows[0].n === 20 && falla(ultimo20, 'máximo de 20'), `${r.rows[0].n} ${ultimo20.error}`);
+
+// ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
+console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
+const v11 = new PGlite();
+await v11.exec(shim);
+await v11.exec(fs.readFileSync(process.env.SQLV11_PATH || '/mnt/user-data/outputs/organizapp/tests/fixtures/estructura_v11.sql', 'utf8'));
+await v11.exec(`insert into auth.users values ('${U.jorge.id}','jorge@test.com'),('${U.paula.id}','paula@test.com');
+  insert into public.perfiles(id,nombre,color) values ('${U.jorge.id}','Jorge','#10b981'),('${U.paula.id}','Paula','#f97316');
+  insert into public.espacios(id,nombre,creado_por) values ('00000000-0000-0000-0000-0000000000e1','Casa','${U.jorge.id}');
+  insert into public.miembros(espacio_id,user_id,relacion) values ('00000000-0000-0000-0000-0000000000e1','${U.jorge.id}','pareja'),('00000000-0000-0000-0000-0000000000e1','${U.paula.id}','pareja');
+  insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha) values ('00000000-0000-0000-0000-0000000000e1','${U.jorge.id}','plan','Cena','2026-10-30');
+  insert into public.invitaciones(espacio_id,email,relacion,creada_por) values ('00000000-0000-0000-0000-0000000000e1','nuevo@test.com','amigo','${U.jorge.id}');`);
+const mig4 = fs.readFileSync(process.env.SQL4_PATH || '/mnt/user-data/outputs/organizapp/sql/04_calendarios.sql', 'utf8');
+let e4 = null;
+try { await v11.exec(mig4); await v11.exec(mig4); } catch (e) { e4 = e.message; }
+ok('La migración 04 se aplica dos veces sin errores', !e4, e4);
+const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
+ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
+ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
+await db.exec('reset role');
+const lista = async (d, sqlq) => (await d.query(sqlq)).rows.map((x) => x.v).sort();
+for (const [nombre, consulta] of [
+  ['las funciones', `select proname||'('||pg_get_function_identity_arguments(oid)||')' v from pg_proc where pronamespace='public'::regnamespace`],
+  ['las columnas', `select table_name||'.'||column_name||':'||data_type||':'||is_nullable v from information_schema.columns where table_schema='public'`],
+  ['las reglas de acceso', `select tablename||'.'||policyname||':'||cmd||':'||coalesce(qual,'')||':'||coalesce(with_check,'') v from pg_policies where schemaname='public'`],
+  ['los permisos de funciones', `select routine_name||':'||grantee v from information_schema.routine_privileges where routine_schema='public' and grantee in ('anon','authenticated','PUBLIC')`],
+  ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
+]) {
+  const a = await lista(db, consulta), b = await lista(v11, consulta);
+  ok(`Una base nueva (01) y una migrada (04) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+}
 
 // ---------- Resumen ----------
 await db.exec('reset role');

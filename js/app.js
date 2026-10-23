@@ -75,7 +75,7 @@ const hoyInicial = hoyISO();
 const S = {
   cargando: true, error: null, errorLogin: null,
   user: null, perfil: null, espacio: null, relacion: null,
-  miembros: [], enviadas: [], invitaciones: [], amistades: null,
+  espacios: [], miembros: [], enviadas: [], invitaciones: [], amistades: null,
   tab: 'inicio', inicioDia: 'manana',
   capas: new Set(), tipos: new Set(leerLocal('tipos', TIPOS.map((t) => t.id))),
   tiposInicio: new Set(leerLocal('tipos_inicio', TIPOS.map((t) => t.id))),
@@ -143,18 +143,30 @@ async function cargarVista(forzar = false) {
   render();
 }
 
-async function cargarTodo() {
+// Deja listo el calendario "esp": personas, invitaciones enviadas y qué capas se ven (se recuerda por calendario).
+async function prepararEspacio(esp) {
+  if (!esp) {
+    Object.assign(S, { espacio: null, relacion: null, miembros: [], enviadas: [], capas: new Set(), eventos: [], menu: [], menuMap: new Map(), rango: null });
+    return;
+  }
+  const d = await D.cargarEspacio(S.user, esp);
+  Object.assign(S, { espacio: esp, relacion: esp.relacion, miembros: d.miembros, enviadas: d.enviadas, eventos: [], menu: [], menuMap: new Map(), rango: null });
+  guardarLocal('espacio_actual', esp.id);
+  const guardadas = leerLocal(`capas_${esp.id}`, null);
+  const ids = new Set(S.miembros.map((m) => m.id));
+  const validas = Array.isArray(guardadas) ? guardadas.filter((i) => ids.has(i)) : [];
+  S.capas = new Set(validas.length ? validas : [...ids]);
+}
+
+async function cargarTodo(preferido = null) {
   S.cargando = true; S.error = null;
   render();
   try {
     const c = await D.cargarContexto(S.user);
-    Object.assign(S, { perfil: c.perfil, espacio: c.espacio, relacion: c.relacion, miembros: c.miembros, enviadas: c.enviadas, invitaciones: c.invitaciones, amistades: c.amistades });
-    const guardadas = leerLocal('capas', null);
-    const ids = new Set(S.miembros.map((m) => m.id));
-    const validas = Array.isArray(guardadas) ? guardadas.filter((i) => ids.has(i)) : [];
-    S.capas = new Set(validas.length ? validas : [...ids]);
+    Object.assign(S, { perfil: c.perfil, espacios: c.espacios, invitaciones: c.invitaciones, amistades: c.amistades });
+    const quiero = preferido || S.espacio?.id || leerLocal('espacio_actual', null);
+    await prepararEspacio(S.espacios.find((e) => e.id === quiero) || S.espacios[0] || null);
     S.cargando = false;
-    S.rango = null;
     if (S.espacio) return await cargarVista(true);
   } catch (e) {
     S.error = e.message || String(e);
@@ -163,8 +175,17 @@ async function cargarTodo() {
   render();
 }
 
+async function cambiarEspacio(id) {
+  const esp = S.espacios.find((e) => e.id === id);
+  if (!esp || esp.id === S.espacio?.id) return;
+  S.cargandoDatos = true; render();
+  try { await prepararEspacio(esp); } catch (e) { aviso(e.message || String(e), true); }
+  S.cargandoDatos = false;
+  await cargarVista(true);
+}
+
 function reiniciarSesionLocal() {
-  Object.assign(S, { user: null, perfil: null, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones: [], amistades: null, eventos: [], menu: [], menuMap: new Map(), rango: null, tab: 'inicio' });
+  Object.assign(S, { user: null, perfil: null, espacio: null, espacios: [], relacion: null, miembros: [], enviadas: [], invitaciones: [], amistades: null, eventos: [], menu: [], menuMap: new Map(), rango: null, tab: 'inicio' });
 }
 
 async function alSesion(sesion) {
@@ -211,13 +232,13 @@ function pantallaBienvenida() {
       S.invitaciones.map((inv) => el('div', { class: 'invitacion' },
         el('p', {}, `${inv.de_nombre} te ha invitado al calendario «${inv.espacio_nombre}».`),
         el('div', { class: 'fila-botones' },
-          el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await D.aceptarInvitacion(inv.id); await cargarTodo(); }) }, 'Aceptar'),
+          el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(await D.aceptarInvitacion(inv.id)); }) }, 'Aceptar'),
           el('button', { onclick: (e) => conCarga(e.currentTarget, async () => { await D.rechazarInvitacion(inv.id); await cargarTodo(); }) }, 'Rechazar'))))) : null,
     el('section', { class: 'tarjeta' },
       el('h2', {}, S.invitaciones.length ? 'O crea uno nuevo' : 'Crea vuestro calendario'),
       el('label', {}, 'Nombre', nombreIn),
       el('p', { class: 'suave' }, 'Después podrás invitar a tu pareja con su correo de Google.'),
-      el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await D.crearEspacio(nombreIn.value.trim() || 'Nuestro calendario'); await cargarTodo(); }) }, 'Crear calendario')),
+      el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(await D.crearEspacio(nombreIn.value.trim() || 'Nuestro calendario')); }) }, 'Crear calendario')),
     el('p', {}, el('button', { class: 'enlace', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
     enlacesLegales());
 }
@@ -229,10 +250,68 @@ function capasChips() {
       type: 'button', class: 'chip-capa', 'aria-pressed': String(S.capas.has(m.id)), style: { '--c': m.color },
       onclick: () => {
         if (S.capas.has(m.id)) { if (S.capas.size > 1) S.capas.delete(m.id); } else S.capas.add(m.id);
-        guardarLocal('capas', [...S.capas]);
+        guardarLocal(`capas_${S.espacio.id}`, [...S.capas]);
         render();
       },
     }, el('span', { class: 'punto' }), m.nombre)));
+}
+
+// ---------- varios calendarios ----------
+const etiquetaRol = (r) => (r === 'pareja' ? 'pareja' : 'amistad');
+
+function selectorCalendario() {
+  if (!S.espacio) return null;
+  return el('button', { type: 'button', class: 'selector-cal', 'aria-haspopup': 'dialog', onclick: () => abrirSelectorCalendarios() },
+    el('span', { class: 'sc-nombre' }, `📅 ${S.espacio.nombre}`),
+    S.invitaciones.length ? el('span', { class: 'punto-aviso en-linea', 'aria-label': 'Tienes invitaciones' }) : null,
+    el('span', { class: 'sc-flecha', 'aria-hidden': 'true' }, '▾'));
+}
+
+// Tarjeta/lista de invitaciones recibidas (a tu correo o de un amigo). Al aceptar se abre ese calendario.
+function listaInvitaciones(alTerminar) {
+  return S.invitaciones.map((inv) => el('div', { class: 'invitacion' },
+    el('p', {}, `${inv.de_nombre} te ha invitado al calendario «${inv.espacio_nombre}» (como ${etiquetaRol(inv.relacion)}).`),
+    el('div', { class: 'fila-botones' },
+      el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+        const id = await D.aceptarInvitacion(inv.id);
+        aviso(`Te has unido a «${inv.espacio_nombre}»`);
+        if (alTerminar) alTerminar();
+        await cargarTodo(id);
+      }) }, 'Aceptar'),
+      el('button', { onclick: (e) => conCarga(e.currentTarget, async () => {
+        await D.rechazarInvitacion(inv.id);
+        if (alTerminar) alTerminar();
+        await cargarTodo();
+      }) }, 'Rechazar'))));
+}
+
+function abrirSelectorCalendarios() {
+  const cerrar = modal('Tus calendarios', el('div', { class: 'formulario' },
+    S.invitaciones.length ? el('div', {}, el('span', { class: 'etq' }, 'Invitaciones'), listaInvitaciones(() => cerrar())) : null,
+    el('ul', { class: 'lista-cals' }, S.espacios.map((e) => el('li', {},
+      el('button', { type: 'button', class: 'fila-cal', 'aria-current': e.id === S.espacio.id ? 'true' : null,
+        onclick: () => { cerrar(); cambiarEspacio(e.id); } },
+        el('span', { class: 'punto', style: { '--c': e.color } }),
+        el('span', { class: 'fc-nombre' }, e.nombre),
+        el('span', { class: 'suave' }, e.id === S.espacio.id ? 'abierto' : etiquetaRol(e.relacion)))))),
+    el('button', { class: 'primario', onclick: () => { cerrar(); abrirNuevoCalendario(); } }, '＋ Nuevo calendario')));
+}
+
+function abrirNuevoCalendario() {
+  const nombreIn = el('input', { type: 'text', maxLength: 80, placeholder: 'Por ejemplo: Personal, Con mi pareja, Pádel…', 'aria-label': 'Nombre del nuevo calendario' });
+  const cerrar = modal('Nuevo calendario', el('div', { class: 'formulario' },
+    el('label', {}, 'Nombre', nombreIn),
+    el('p', { class: 'suave' }, 'Empieza siendo solo tuyo: nadie lo ve hasta que invites a alguien. Luego puedes invitar a tu pareja o a tus amigos.'),
+    el('div', { class: 'fila-botones fin' },
+      el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'),
+      el('button', { type: 'button', class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+        const nombre = nombreIn.value.trim();
+        if (!nombre) throw new Error('Ponle un nombre al calendario.');
+        const id = await D.crearEspacio(nombre);
+        cerrar(); aviso('Calendario creado');
+        await cargarTodo(id);
+      }) }, 'Crear'))));
+  setTimeout(() => nombreIn.focus(), 50);
 }
 
 const TABS = [['inicio', '🏠', 'Inicio'], ['calendario', '🗓️', 'Calendario'], ['menu', '🍽️', 'Menú'], ['mas', '⚙️', 'Más']];
@@ -246,11 +325,12 @@ function marco() {
         el('img', { src: 'icons/logo-cabecera.png', alt: '', width: 32, height: 32, class: 'logo-cab' }),
         el('h1', {}, titulo),
         el('span', { class: 'version', title: 'Versión de la app' }, `v${S.version}`)),
+      selectorCalendario(),
       S.tab === 'mas' ? null : capasChips()),
     el('main', { id: 'contenido', class: 'contenido' }, S.cargandoDatos ? el('p', { class: 'vacio' }, 'Cargando…') : vistaActual()),
     el('nav', { class: 'tabs', 'aria-label': 'Secciones' },
       TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; if (id === 'mas') recargarAmistades(); cargarVista(); } },
-        el('span', { class: 'ico' }, ico, id === 'mas' && solicitudesRecibidas().length ? el('span', { class: 'punto-aviso', role: 'status', 'aria-label': 'Tienes solicitudes de amistad' }) : null), el('span', {}, nom)))),
+        el('span', { class: 'ico' }, ico, id === 'mas' && (solicitudesRecibidas().length || S.invitaciones.length) ? el('span', { class: 'punto-aviso', role: 'status', 'aria-label': 'Tienes avisos pendientes' }) : null), el('span', {}, nom)))),
     (S.tab === 'inicio' || S.tab === 'calendario') && !S.cargandoDatos
       ? el('button', { class: 'fab', 'aria-label': 'Añadir evento', onclick: () => abrirEditorEvento({ fecha: fechaFab }) }, '＋') : null);
 }
@@ -573,7 +653,7 @@ function vistaInicio() {
       [['hoy', 'Hoy'], ['manana', 'Mañana']].map(([id, nom]) =>
         el('button', { type: 'button', 'aria-pressed': String(S.inicioDia === id), onclick: () => { S.inicioDia = id; render(); } }, nom))),
     el('h2', { class: 'fecha-grande' }, cap(fechaLarga(dia))),
-    (S.miembros.length === 1 && S.relacion === 'pareja') ? el('div', { class: 'tarjeta aviso-invitar' },
+    (S.miembros.length === 1 && S.relacion === 'pareja' && S.espacios.length === 1) ? el('div', { class: 'tarjeta aviso-invitar' },
       el('p', {}, 'Ahora mismo estás solo en este calendario.'),
       el('button', { class: 'primario', onclick: () => { S.tab = 'mas'; render(); } }, 'Invitar a tu pareja')) : null,
     esManana ? el('section', { class: 'seccion preparar' },
@@ -809,7 +889,80 @@ function tarjetaAmigos() {
           el('span', {}, a.nombre),
           accion('Quitar', async () => { if (confirm(`¿Quitar a ${a.nombre} de tus amigos?`)) await D.quitarAmistad(a.id); }))))
         : el('p', { class: 'suave' }, 'Todavía no tienes amigos añadidos.'),
-      el('p', { class: 'suave' }, 'Más adelante podrás compartir calendarios con ellos.')));
+      el('p', { class: 'suave' }, 'Para compartir un calendario con un amigo, ábrelo arriba y usa «Invitar a un amigo» en su ficha de esta pantalla.')));
+}
+
+// ---------- ajustes del calendario abierto ----------
+function tarjetaCalendario() {
+  const esPareja = S.relacion === 'pareja';
+  const yo = S.user.id;
+  const soyCreador = S.espacio.creado_por === yo;
+  const emailIn = el('input', { type: 'email', placeholder: 'correo de Google de tu pareja', autocomplete: 'off', 'aria-label': 'Correo a invitar' });
+  const nombreCalIn = el('input', { type: 'text', maxLength: 80, value: S.espacio.nombre, 'aria-label': 'Nombre del calendario' });
+  const libres = (S.amistades || []).filter((a) => a.estado === 'aceptada' && !S.miembros.some((m) => m.id === a.otro_id)
+    && !S.enviadas.some((i) => i.es_amigo && i.destino === a.nombre));
+  const amigoSel = el('select', { 'aria-label': 'Amigo a invitar' }, libres.map((a) => el('option', { value: a.otro_id }, a.nombre)));
+  const rolSel = el('select', { 'aria-label': 'Rol del amigo' },
+    el('option', { value: 'amigo' }, 'Amigo: ve todo y edita solo lo suyo'),
+    el('option', { value: 'pareja' }, 'Pareja: puede editar todo'));
+  const hayHueco = S.miembros.length < 5;
+
+  return el('section', { class: 'tarjeta', id: 'calendario-ajustes' },
+    el('h2', {}, `Calendario «${S.espacio.nombre}»`),
+    S.miembros.length === 1 ? el('p', { class: 'suave' }, 'Ahora mismo solo lo ves tú.') : null,
+    el('ul', { class: 'personas' }, S.miembros.map((m) => el('li', { class: 'amigo-fila', style: { '--c': m.color } },
+      el('span', {}, el('span', { class: 'punto' }), ` ${m.nombre}${m.id === yo ? ' (tú)' : ''}`, el('span', { class: 'suave' }, ` · ${etiquetaRol(m.relacion)}`)),
+      esPareja && m.id !== yo && m.id !== S.espacio.creado_por
+        ? el('button', { class: 'enlace', onclick: (e) => {
+          if (!confirm(`¿Quitar a ${m.nombre} de «${S.espacio.nombre}»? Se borrarán sus eventos y menús en este calendario.`)) return;
+          conCarga(e.currentTarget, async () => { await D.quitarMiembro(S.espacio.id, m.id); aviso('Persona quitada'); await cargarTodo(); });
+        } }, 'Quitar') : null))),
+    esPareja ? el('div', {},
+      el('label', {}, 'Nombre del calendario', nombreCalIn),
+      el('button', { onclick: (e) => conCarga(e.currentTarget, async () => {
+        const n = nombreCalIn.value.trim();
+        if (!n) throw new Error('Ponle un nombre al calendario.');
+        await D.renombrarEspacio(S.espacio.id, n); aviso('Nombre guardado'); await cargarTodo();
+      }) }, 'Cambiar nombre')) : null,
+    esPareja && hayHueco ? el('div', { class: 'bloque' },
+      el('label', {}, 'Invitar por correo de Google', emailIn),
+      el('p', { class: 'suave' }, 'Escribe el correo de la cuenta con la que entrará. Cuando abra la app con esa cuenta verá la invitación.'),
+      el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+        const mail = emailIn.value.trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) throw new Error('Ese correo no parece válido.');
+        if (mail === (S.user.email || '').toLowerCase()) throw new Error('Ese es tu propio correo.');
+        await D.invitar(S.espacio.id, mail, 'pareja', S.user.id);
+        aviso('Invitación creada');
+        await cargarTodo();
+      }) }, 'Invitar')) : null,
+    esPareja && hayHueco && S.amistades !== null ? el('div', { class: 'bloque' },
+      el('span', { class: 'etq' }, 'Invitar a un amigo'),
+      libres.length ? [
+        amigoSel, rolSel,
+        el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+          await D.invitarAmigo(S.espacio.id, amigoSel.value, rolSel.value);
+          aviso('Invitación enviada');
+          await cargarTodo();
+        }) }, 'Invitar al calendario'),
+      ] : el('p', { class: 'suave' }, (S.amistades || []).some((a) => a.estado === 'aceptada')
+        ? 'Todos tus amigos ya están en este calendario o tienen una invitación pendiente.'
+        : 'Añade amigos con su código (más abajo) para poder invitarles aquí sin pedirles el correo.')) : null,
+    esPareja && !hayHueco ? el('p', { class: 'suave' }, 'Este calendario ya tiene 5 personas, el máximo.') : null,
+    esPareja && S.enviadas.length ? el('div', { class: 'bloque' },
+      el('span', { class: 'etq' }, 'Invitaciones pendientes'),
+      el('ul', { class: 'personas' }, S.enviadas.map((i) => el('li', { class: 'amigo-fila' },
+        el('span', {}, `${i.destino} · ${etiquetaRol(i.relacion)}`),
+        el('button', { class: 'enlace', onclick: (e) => conCarga(e.currentTarget, async () => { await D.borrarInvitacion(i.id); await cargarTodo(); }) }, 'Quitar'))))) : null,
+    el('div', { class: 'bloque' },
+      soyCreador
+        ? el('button', { class: 'peligro', onclick: (e) => {
+          if (!confirm(`¿Borrar «${S.espacio.nombre}»? Se borra para todas las personas, con todos sus eventos y menús. No se puede deshacer.`)) return;
+          conCarga(e.currentTarget, async () => { await D.eliminarEspacio(S.espacio.id); aviso('Calendario borrado'); S.espacio = null; await cargarTodo(); });
+        } }, 'Borrar este calendario')
+        : el('button', { class: 'peligro', onclick: (e) => {
+          if (!confirm(`¿Salir de «${S.espacio.nombre}»? Se borrarán tus eventos y menús de este calendario.`)) return;
+          conCarga(e.currentTarget, async () => { await D.salirEspacio(S.espacio.id); aviso('Has salido del calendario'); S.espacio = null; await cargarTodo(); });
+        } }, 'Salir de este calendario')));
 }
 
 function vistaMas() {
@@ -819,7 +972,6 @@ function vistaMas() {
     type: 'button', class: 'muestra', style: { '--c': c }, 'aria-label': `Color ${c}`, 'aria-pressed': String(c === colorSel),
     onclick: () => { colorSel = c; swatches.forEach((b, i) => b.setAttribute('aria-pressed', String(PALETA[i] === colorSel))); },
   }));
-  const emailIn = el('input', { type: 'email', placeholder: 'correo de Google de tu pareja', autocomplete: 'off', 'aria-label': 'Correo a invitar' });
   const temaSel = el('select', { 'aria-label': 'Aspecto', onchange: () => { guardarLocal('tema', temaSel.value); aplicarTema(); aviso('Ajuste guardado'); } },
     [['auto', 'Automático (como tu móvil)'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([v, n]) => el('option', { value: v, selected: leerLocal('tema', 'auto') === v }, n)));
 
@@ -827,40 +979,21 @@ function vistaMas() {
     [['lista', 'Lista (una sola columna)'], ['columnas', 'Una columna por persona']].map(([v, n]) => el('option', { value: v, selected: S.vista === v }, n)));
 
   return el('div', { class: 'mas' },
+    S.invitaciones.length ? el('section', { class: 'tarjeta resaltada', id: 'invitaciones' },
+      el('h2', {}, 'Tienes invitaciones'), listaInvitaciones()) : null,
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Tú'),
       el('label', {}, 'Nombre', nombreIn),
-      el('div', {}, el('span', { class: 'etq' }, 'Tu color en el calendario'), el('div', { class: 'muestras' }, swatches)),
+      el('div', {}, el('span', { class: 'etq' }, `Tu color en «${S.espacio.nombre}»`), el('div', { class: 'muestras' }, swatches)),
       el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
         const n = nombreIn.value.trim();
         if (!n) throw new Error('Pon un nombre.');
-        await D.guardarPerfil(S.user.id, { nombre: n, color: colorSel });
+        if (n !== S.perfil?.nombre) await D.guardarPerfil(S.user.id, { nombre: n });
+        if (colorSel !== (miembro(S.user.id) || {}).color) await D.cambiarMiColor(S.espacio.id, colorSel);
         aviso('Guardado');
         await cargarTodo();
       }) }, 'Guardar')),
-    el('section', { class: 'tarjeta' },
-      el('h2', {}, `Calendario «${S.espacio.nombre}»`),
-      el('ul', { class: 'personas' }, S.miembros.map((m) => el('li', { style: { '--c': m.color } },
-        el('span', { class: 'punto' }), `${m.nombre}${m.id === S.user.id ? ' (tú)' : ''}`,
-        el('span', { class: 'suave' }, m.relacion === 'pareja' ? ' · pareja' : ' · amistad')))),
-      S.relacion === 'pareja' ? [
-        S.miembros.length < 5 ? el('div', {},
-          el('label', {}, 'Invitar a tu pareja', emailIn),
-          el('p', { class: 'suave' }, 'Escribe el correo de la cuenta de Google con la que entrará. Cuando abra la app con esa cuenta verá la invitación.'),
-          el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
-            const mail = emailIn.value.trim().toLowerCase();
-            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) throw new Error('Ese correo no parece válido.');
-            if (mail === (S.user.email || '').toLowerCase()) throw new Error('Ese es tu propio correo.');
-            await D.invitar(S.espacio.id, mail, 'pareja', S.user.id);
-            aviso('Invitación creada');
-            await cargarTodo();
-          }) }, 'Invitar')) : null,
-        S.enviadas.length ? el('div', {},
-          el('span', { class: 'etq' }, 'Invitaciones pendientes'),
-          el('ul', { class: 'personas' }, S.enviadas.map((i) => el('li', {},
-            i.email, ' ',
-            el('button', { class: 'enlace', onclick: (e) => conCarga(e.currentTarget, async () => { await D.borrarInvitacion(i.id); await cargarTodo(); }) }, 'Quitar'))))) : null,
-      ] : null),
+    tarjetaCalendario(),
     tarjetaAmigos(),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
