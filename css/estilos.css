@@ -265,3 +265,7 @@ body.arrastrando { overscroll-behavior: contain; }
 .fila-cal .fc-nombre { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tarjeta.resaltada { border-color: var(--acento); box-shadow: inset 0 0 0 1px var(--acento); }
 .bloque { margin-top: .9rem; padding-top: .8rem; border-top: 1px solid color-mix(in srgb, var(--suave) 22%, transparent); display: grid; gap: .5rem; }
+
+details.plegable > summary { cursor: pointer; color: var(--acento); font-weight: 600; padding: .2rem 0; }
+details.plegable[open] > summary { margin-bottom: .5rem; }
+details.plegable > * + * { margin-top: .5rem; }

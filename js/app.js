@@ -237,8 +237,11 @@ function pantallaBienvenida() {
     el('section', { class: 'tarjeta' },
       el('h2', {}, S.invitaciones.length ? 'O crea uno nuevo' : 'Crea vuestro calendario'),
       el('label', {}, 'Nombre', nombreIn),
-      el('p', { class: 'suave' }, 'Después podrás invitar a tu pareja con su correo de Google.'),
+      el('p', { class: 'suave' }, 'Después podrás invitar a tu pareja o a tus amigos.'),
       el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(await D.crearEspacio(nombreIn.value.trim() || 'Nuestro calendario')); }) }, 'Crear calendario')),
+    tarjetaAmigos(),
+    el('div', { class: 'fila-botones' },
+      el('button', { onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(); }) }, '🔄 Comprobar invitaciones')),
     el('p', {}, el('button', { class: 'enlace', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
     enlacesLegales());
 }
@@ -811,7 +814,7 @@ const solicitudesRecibidas = () => (S.amistades || []).filter((a) => a.estado ==
 const verCodigo = (c) => (c ? `${c.slice(0, 4)}-${c.slice(4)}` : '');
 
 async function recargarAmistades(pintar = true) {
-  if (!S.user || !S.espacio || S.amistades === null) return; // sin sesión, o la base aún no tiene el cambio 3
+  if (!S.user || S.amistades === null) return; // sin sesión, o la base aún no tiene el cambio 3
   try {
     const nuevas = await D.misAmistades();
     const cambio = JSON.stringify(nuevas) !== JSON.stringify(S.amistades);
@@ -889,7 +892,9 @@ function tarjetaAmigos() {
           el('span', {}, a.nombre),
           accion('Quitar', async () => { if (confirm(`¿Quitar a ${a.nombre} de tus amigos?`)) await D.quitarAmistad(a.id); }))))
         : el('p', { class: 'suave' }, 'Todavía no tienes amigos añadidos.'),
-      el('p', { class: 'suave' }, 'Para compartir un calendario con un amigo, ábrelo arriba y usa «Invitar a un amigo» en su ficha de esta pantalla.')));
+      el('p', { class: 'suave' }, S.espacio
+        ? 'Para compartir un calendario con un amigo, ábrelo arriba y usa «Invitar a un amigo» en su ficha de esta pantalla.'
+        : 'Cuando seáis amigos, esa persona podrá invitarte a su calendario y la invitación te saldrá aquí.')));
 }
 
 // ---------- ajustes del calendario abierto ----------
@@ -924,8 +929,9 @@ function tarjetaCalendario() {
         if (!n) throw new Error('Ponle un nombre al calendario.');
         await D.renombrarEspacio(S.espacio.id, n); aviso('Nombre guardado'); await cargarTodo();
       }) }, 'Cambiar nombre')) : null,
-    esPareja && hayHueco ? el('div', { class: 'bloque' },
-      el('label', {}, 'Invitar por correo de Google', emailIn),
+    esPareja && hayHueco ? el('details', { class: 'bloque plegable' },
+      el('summary', {}, '¿Aún no tiene la app? Invitar por correo'),
+      el('label', {}, 'Correo de Google', emailIn),
       el('p', { class: 'suave' }, 'Escribe el correo de la cuenta con la que entrará. Cuando abra la app con esa cuenta verá la invitación.'),
       el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
         const mail = emailIn.value.trim().toLowerCase();
@@ -934,7 +940,7 @@ function tarjetaCalendario() {
         await D.invitar(S.espacio.id, mail, 'pareja', S.user.id);
         aviso('Invitación creada');
         await cargarTodo();
-      }) }, 'Invitar')) : null,
+      }) }, 'Invitar por correo')) : null,
     esPareja && hayHueco && S.amistades !== null ? el('div', { class: 'bloque' },
       el('span', { class: 'etq' }, 'Invitar a un amigo'),
       libres.length ? [
@@ -1396,6 +1402,7 @@ function iniciar() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) oculta = Date.now();
     else if (S.espacio && Date.now() - oculta > 30000) { cargarVista(true); recargarAmistades(); }
+    else if (S.user && !S.espacio && !S.cargando && Date.now() - oculta > 5000) cargarTodo(); // sin calendario: por si te han invitado
   });
 }
 

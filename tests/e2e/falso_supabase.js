@@ -7,6 +7,7 @@ var supabase = (function () {
     jorge: { id: '00000000-0000-0000-0000-00000000000a', email: 'jorge@test.com', user_metadata: { full_name: 'Jorge Pérez' } },
     paula: { id: '00000000-0000-0000-0000-00000000000b', email: 'paula@test.com', user_metadata: { full_name: 'Paula Gómez' } },
     tercero: { id: '00000000-0000-0000-0000-00000000000c', email: 'tercero@test.com', user_metadata: { full_name: 'Tercero' } },
+    cuarto: { id: '00000000-0000-0000-0000-00000000000d', email: 'cuarto@test.com', user_metadata: { full_name: 'Cuarto Nuevo' } },
   };
   const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [] });
   const cargar = () => { try { return JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); } catch { return vacia(); } };
