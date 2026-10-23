@@ -431,3 +431,208 @@ export function plantillaMenu() {
     },
   ];
 }
+
+// ---------- calendario .ics (iCalendar) ----------
+// Lee un archivo .ics y devuelve los eventos de hoy en adelante, ya en el formato de la app. Función pura (no toca pantalla ni red).
+// Las repeticiones semanales pasan a ser una serie (con sus días); el resto (diaria, mensual, anual, cada N semanas)
+// se convierte en fechas sueltas de los próximos meses. Lo que no se puede traducir se cuenta en «omitidos».
+export const LIMITES_ICS = { eventos: 500, dias: 120, porSerie: 60 };
+
+function desdoblarICS(texto) {
+  const out = [];
+  for (const l of String(texto).replace(/\r\n?/g, '\n').split('\n')) {
+    if ((l.startsWith(' ') || l.startsWith('\t')) && out.length) out[out.length - 1] += l.slice(1);
+    else if (l) out.push(l);
+  }
+  return out;
+}
+function propICS(linea) {
+  let comillas = false, i = 0;
+  for (; i < linea.length; i++) {
+    const c = linea[i];
+    if (c === '"') comillas = !comillas; else if (c === ':' && !comillas) break;
+  }
+  if (i >= linea.length) return null;
+  const [nombre, ...ps] = linea.slice(0, i).split(';');
+  const params = {};
+  for (const p of ps) { const k = p.indexOf('='); if (k > 0) params[p.slice(0, k).toUpperCase()] = p.slice(k + 1).replace(/^"|"$/g, ''); }
+  return { nombre: nombre.toUpperCase(), params, valor: linea.slice(i + 1) };
+}
+const desescaparICS = (s) => String(s).replace(/\\(.)/g, (_, c) => (c === 'n' || c === 'N' ? '\n' : c));
+
+function partesZona(ms, zona) {
+  const f = new Intl.DateTimeFormat('en-CA', { timeZone: zona || undefined, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { y: +p.year, mo: +p.month, d: +p.day, h: +p.hour, mi: +p.minute };
+}
+const aFechaHoraZona = (ms, zona) => {
+  const p = partesZona(ms, zona);
+  return { fecha: `${p.y}-${pad(p.mo)}-${pad(p.d)}`, hora: `${pad(p.h)}:${pad(p.mi)}` };
+};
+function zonaAUTC(y, mo, d, h, mi, tz) { // hora «de pared» en la zona tz → milisegundos UTC (lanza error si tz no existe)
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  let res = guess;
+  for (let i = 0; i < 2; i++) {
+    const p = partesZona(res, tz);
+    res = guess - (Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi) - res);
+  }
+  return res;
+}
+// «20261024», «20261024T200000», «20261024T180000Z», con TZID opcional. Devuelve { fecha, hora|null, todoElDia }
+function fechaICS(valor, params, zona) {
+  const v = String(valor).trim();
+  let m = /^(\d{4})(\d{2})(\d{2})$/.exec(v);
+  if (m) return { fecha: `${m[1]}-${m[2]}-${m[3]}`, hora: null, todoElDia: true };
+  m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/i.exec(v);
+  if (!m) return null;
+  const [y, mo, d, h, mi] = [+m[1], +m[2], +m[3], +m[4], +m[5]];
+  if (m[7]) return { ...aFechaHoraZona(Date.UTC(y, mo - 1, d, h, mi), zona), todoElDia: false };
+  if (params && params.TZID) {
+    try { return { ...aFechaHoraZona(zonaAUTC(y, mo, d, h, mi, params.TZID), zona), todoElDia: false }; } catch { /* zona desconocida: se toma la hora tal cual */ }
+  }
+  return { fecha: `${m[1]}-${m[2]}-${m[3]}`, hora: `${m[4]}:${m[5]}`, todoElDia: false };
+}
+function textoLimpioICS(s) {
+  return desescaparICS(s).replace(/<br\s*\/?>/gi, '\n').replace(/<\/?[a-z][^>]*>/gi, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+
+const DIAS_ICS = { MO: 0, TU: 1, WE: 2, TH: 3, FR: 4, SA: 5, SU: 6 };
+function reglaICS(valor) {
+  const r = {};
+  for (const par of String(valor).split(';')) { const k = par.indexOf('='); if (k > 0) r[par.slice(0, k).toUpperCase()] = par.slice(k + 1); }
+  return r;
+}
+// ¿Sabemos traducir esta regla de repetición?
+function reglaSoportada(r, fecha) {
+  const f = r.FREQ;
+  const porDia = r.BYDAY ? r.BYDAY.split(',').map((s) => s.trim()) : [];
+  if (porDia.some((x) => !(x in DIAS_ICS))) return false; // «el primer lunes del mes», etc.
+  if (r.BYSETPOS || r.BYWEEKNO || r.BYYEARDAY || r.BYHOUR || r.BYMINUTE) return false;
+  const [, m, d] = fecha.split('-').map(Number);
+  if (f === 'DAILY' || f === 'WEEKLY') return !r.BYMONTHDAY && !r.BYMONTH;
+  if (f === 'MONTHLY') return !porDia.length && !r.BYMONTH && (!r.BYMONTHDAY || Number(r.BYMONTHDAY) === d);
+  if (f === 'YEARLY') return !porDia.length && (!r.BYMONTH || Number(r.BYMONTH) === m) && (!r.BYMONTHDAY || Number(r.BYMONTHDAY) === d);
+  return false;
+}
+// Fechas en que ocurre (sin contar excepciones), en orden y sin fin: quien la use pone el límite.
+function* instanciasICS(fecha, r) {
+  const paso = Math.max(1, parseInt(r.INTERVAL, 10) || 1);
+  const dias = r.BYDAY ? [...new Set(r.BYDAY.split(',').map((s) => DIAS_ICS[s.trim()]))].sort((a, b) => a - b) : null;
+  const [y, m, d] = fecha.split('-').map(Number);
+  if (r.FREQ === 'DAILY') {
+    for (let k = 0; ; k++) { const x = sumarDias(fecha, k * paso); if (!dias || dias.includes(diaSemana(x))) yield x; }
+  } else if (r.FREQ === 'WEEKLY') {
+    const dd = dias && dias.length ? dias : [diaSemana(fecha)];
+    const lunes = inicioSemana(fecha);
+    for (let k = 0; ; k++) for (const di of dd) { const x = sumarDias(lunes, k * 7 * paso + di); if (x >= fecha) yield x; }
+  } else if (r.FREQ === 'MONTHLY') {
+    for (let k = 0; ; k++) {
+      const t = y * 12 + (m - 1) + k * paso, yy = Math.floor(t / 12), mm = (t % 12) + 1;
+      if (d <= new Date(Date.UTC(yy, mm, 0)).getUTCDate()) yield `${yy}-${pad(mm)}-${pad(d)}`;
+    }
+  } else if (r.FREQ === 'YEARLY') {
+    for (let k = 0; ; k++) {
+      const yy = y + k * paso;
+      if (d <= new Date(Date.UTC(yy, m, 0)).getUTCDate()) yield `${yy}-${pad(m)}-${pad(d)}`;
+    }
+  }
+}
+
+export function leerICS(texto, { desde = hoyISO(), zona } = {}) {
+  const lineas = desdoblarICS(texto);
+  const crudos = [];
+  let actual = null;
+  for (const l of lineas) {
+    const u = l.toUpperCase();
+    if (u === 'BEGIN:VEVENT') { actual = { props: [] }; continue; }
+    if (u === 'END:VEVENT') { if (actual) crudos.push(actual); actual = null; continue; }
+    if (actual) { const p = propICS(l); if (p) actual.props.push(p); }
+  }
+  const out = { eventos: [], omitidos: [], pasados: 0, truncado: false, encontrados: crudos.length };
+  if (!lineas.some((l) => l.toUpperCase() === 'BEGIN:VCALENDAR')) return { ...out, error: 'Este archivo no parece un calendario .ics.' };
+
+  // 1) cada VEVENT → un registro sencillo
+  const regs = [];
+  for (const c of crudos) {
+    const una = (n) => c.props.find((p) => p.nombre === n);
+    if ((una('STATUS')?.valor || '').toUpperCase() === 'CANCELLED') continue;
+    const ini = una('DTSTART');
+    const inicio = ini && fechaICS(ini.valor, ini.params, zona);
+    const titulo = (textoLimpioICS(una('SUMMARY')?.valor || '').replace(/\s*\n\s*/g, ' ') || '(sin título)').slice(0, 120);
+    if (!inicio) { out.omitidos.push({ titulo, motivo: 'sin fecha de inicio válida' }); continue; }
+    let hora_fin = null, variosDias = 0;
+    const fin = una('DTEND') && fechaICS(una('DTEND').valor, una('DTEND').params, zona);
+    if (fin && inicio.todoElDia) variosDias = Math.max(0, diffDias(fin.fecha, inicio.fecha) - 1);
+    else if (fin && fin.hora && fin.fecha === inicio.fecha && inicio.hora && fin.hora > inicio.hora) hora_fin = fin.hora;
+    // si acaba al día siguiente, se queda sin hora de fin (la app no tiene eventos de varios días)
+    const lugar = una('LOCATION') ? textoLimpioICS(una('LOCATION').valor) : '';
+    const desc = una('DESCRIPTION') ? textoLimpioICS(una('DESCRIPTION').valor) : '';
+    const notas = [lugar ? `Lugar: ${lugar}` : '', desc].filter(Boolean).join('\n').slice(0, 1000) || null;
+    const exd = [];
+    for (const p of c.props.filter((x) => x.nombre === 'EXDATE')) for (const v of p.valor.split(',')) { const f = fechaICS(v, p.params, zona); if (f) exd.push(f.fecha); }
+    const rid = una('RECURRENCE-ID') && fechaICS(una('RECURRENCE-ID').valor, una('RECURRENCE-ID').params, zona);
+    regs.push({
+      uid: una('UID')?.valor || '', titulo, fecha: inicio.fecha, hora_inicio: inicio.todoElDia ? null : inicio.hora, hora_fin, notas, variosDias,
+      regla: una('RRULE') ? reglaICS(una('RRULE').valor) : null, exd, rid: rid ? rid.fecha : null, zonaUntil: zona,
+    });
+  }
+  // 2) una ocurrencia cambiada de una serie (RECURRENCE-ID) sustituye a la de la serie
+  for (const r of regs.filter((x) => x.rid)) {
+    const madre = regs.find((x) => !x.rid && x.uid && x.uid === r.uid);
+    if (madre) madre.exd.push(r.rid);
+  }
+
+  const evs = [];
+  const poner = (e) => evs.push({ uid: e.uid, notas: null, variosDias: 0, excepciones: [], repeticion: null, dias_semana: null, repite_hasta: null, ...e });
+  for (const r of regs) {
+    const base = { uid: r.uid, titulo: r.titulo, hora_inicio: r.hora_inicio, hora_fin: r.hora_fin, notas: r.notas, variosDias: r.variosDias };
+    if (!r.regla || r.rid) { // evento suelto
+      if (r.fecha < desde) { out.pasados++; continue; }
+      poner({ ...base, fecha: r.fecha });
+      continue;
+    }
+    const rg = r.regla;
+    if (!reglaSoportada(rg, r.fecha)) { out.omitidos.push({ titulo: r.titulo, motivo: 'repetición que la app no sabe hacer (por ejemplo, «el primer lunes de cada mes»)' }); continue; }
+    const hastaUntil = rg.UNTIL ? (fechaICS(rg.UNTIL, {}, r.zonaUntil)?.fecha || null) : null;
+    const cuenta = rg.COUNT ? parseInt(rg.COUNT, 10) : 0;
+    const exd = new Set(r.exd);
+    if (rg.FREQ === 'WEEKLY' && (parseInt(rg.INTERVAL, 10) || 1) === 1) {
+      // serie semanal: se guarda como serie
+      const dias = rg.BYDAY ? [...new Set(rg.BYDAY.split(',').map((s) => DIAS_ICS[s.trim()]))].sort((a, b) => a - b) : [diaSemana(r.fecha)];
+      let ultima = null;
+      if (cuenta) { let n = 0; for (const d of instanciasICS(r.fecha, rg)) { if (++n >= cuenta) { ultima = d; break; } if (n > 5000) break; } }
+      const hasta = [hastaUntil, ultima].filter(Boolean).sort()[0] || null;
+      if (hasta && hasta < desde) { out.pasados++; continue; }
+      const tmp = { fecha: r.fecha, repeticion: 'semanal', dias_semana: dias, repite_hasta: hasta, excepciones: [] };
+      let ini = r.fecha;
+      if (r.fecha < desde) { const p = ocurrencias(tmp, desde, sumarDias(desde, 7))[0]; if (!p) { out.pasados++; continue; } ini = p; }
+      poner({ ...base, fecha: ini, repeticion: 'semanal', dias_semana: normalizarDias(dias, ini), repite_hasta: hasta, excepciones: [...exd].filter((d) => d >= ini).sort() });
+    } else {
+      // el resto: fechas sueltas de los próximos meses
+      const limite = sumarDias(desde, LIMITES_ICS.dias);
+      const fechas = []; let n = 0, corta = false;
+      for (const d of instanciasICS(r.fecha, rg)) {
+        if (++n > 20000) break;
+        if (cuenta && n > cuenta) break;
+        if (hastaUntil && d > hastaUntil) break;
+        if (d > limite) { corta = true; break; }
+        if (d < desde || exd.has(d)) continue;
+        if (fechas.length >= LIMITES_ICS.porSerie) { corta = true; break; }
+        fechas.push(d);
+      }
+      if (!fechas.length) { out.pasados++; continue; }
+      if (corta) out.truncado = true;
+      poner({ ...base, fecha: fechas[0], fechas, expandido: true });
+    }
+  }
+  evs.sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.hora_inicio || '').localeCompare(String(b.hora_inicio || '')) || a.titulo.localeCompare(b.titulo, 'es'));
+  let total = 0;
+  for (const e of evs) {
+    const n = e.fechas ? e.fechas.length : 1;
+    if (total + n > LIMITES_ICS.eventos) { out.truncado = true; continue; }
+    total += n; out.eventos.push(e);
+  }
+  return out;
+}

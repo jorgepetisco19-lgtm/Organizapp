@@ -5,7 +5,7 @@ import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
   repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu,
-  ocurrencias, normalizarDias, descripcionRepeticion, nombreDia,
+  ocurrencias, normalizarDias, descripcionRepeticion, nombreDia, leerICS, LIMITES_ICS,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -1129,6 +1129,8 @@ function tarjetaCalendario() {
         el('button', { class: 'enlace', onclick: (e) => conCarga(e.currentTarget, async () => { await D.borrarInvitacion(i.id); await cargarTodo(); }) }, 'Quitar'))))) : null,
     S.espacios.length > 1 ? el('div', { class: 'bloque' },
       el('button', { onclick: () => abrirImportarEventos() }, '📋 Importar mis eventos de otro calendario')) : null,
+    editables().length ? el('div', { class: 'bloque' },
+      el('button', { onclick: () => abrirImportarICS() }, '📅 Importar un archivo de calendario (.ics)')) : null,
     el('div', { class: 'bloque' },
       soyCreador
         ? el('button', { class: 'peligro', onclick: (e) => {
@@ -1542,6 +1544,141 @@ function abrirImportarEventos() {
     el('p', { class: 'suave' }, `Se copian como eventos tuyos a «${S.espacio.nombre}». ${otrasPersonas.length ? `Los verán: ${otrasPersonas.join(', ')}.` : 'Ahora solo los ves tú.'} Son copias: si cambias uno, el otro no se modifica.`),
     el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'), botonImportar)));
   cargarLista();
+}
+
+// Importa un archivo .ics (Google Calendar, Outlook, Apple, el calendario de un club…). Se lee en el móvil: no se sube a ningún sitio.
+function abrirImportarICS() {
+  const hayVarios = S.miembros.length > 1;
+  const opciones = hayVarios ? [...editables().map((m) => ({ id: m.id, nombre: m.nombre, color: m.color })), { id: 'todos', nombre: etiquetaTodos(), color: COLOR_AMBOS }] : [];
+  let objetivos = new Set([S.user.id]);
+  let filas = [], existentes = null;
+  const archivo = el('input', { type: 'file', accept: '.ics,text/calendar', 'aria-label': 'Archivo de calendario (.ics)' });
+  const mensaje = el('div', { 'aria-live': 'polite' });
+  const lista = el('div', { class: 'lista-import', 'aria-live': 'polite' });
+  const tipoSel = el('select', { 'aria-label': 'Tipo de todos los eventos' }, TIPOS.map((t) => el('option', { value: t.id, selected: t.id === 'plan' }, `${t.icono} ${t.nombre}`)));
+  const botonImportar = el('button', { type: 'button', class: 'primario', disabled: true }, 'Importar');
+  const claveEv = (titulo, fecha, hora) => `${String(titulo).trim().toLowerCase()}|${fecha}|${hhmm(hora)}`;
+  const porDueno = new Map(), compartidos = new Set();
+  const existe = (ev, fecha, o) => (o === 'todos' ? compartidos : (porDueno.get(o) || new Set())).has(claveEv(ev.titulo, fecha, ev.hora_inicio));
+  const fechasDe = (ev) => ev.fechas || [ev.fecha];
+  const yaEsta = (ev, o) => fechasDe(ev).every((f) => existe(ev, f, o));
+  const yaEstaEnTodos = (ev) => [...objetivos].every((o) => yaEsta(ev, o));
+
+  const chipsQuien = hayVarios ? el('div', { class: 'quien-lista' },
+    el('span', { class: 'etq' }, 'Para (puedes marcar varias personas)'),
+    el('div', { class: 'chips', role: 'group', 'aria-label': 'Para quién' }, opciones.map((o) => {
+      const b = el('button', {
+        type: 'button', class: 'chip-capa', 'aria-pressed': String(objetivos.has(o.id)), style: { '--c': o.color },
+        onclick: () => {
+          if (o.id === 'todos') objetivos = new Set(['todos']);
+          else { objetivos.delete('todos'); if (objetivos.has(o.id)) { if (objetivos.size > 1) objetivos.delete(o.id); } else objetivos.add(o.id); }
+          chipsQuien.querySelectorAll('.chip-capa').forEach((x, i) => x.setAttribute('aria-pressed', String(objetivos.has(opciones[i].id))));
+          refrescar();
+        },
+      }, el('span', { class: 'punto' }), o.nombre);
+      return b;
+    })),
+    el('p', { class: 'suave' }, `«${etiquetaTodos()}» crea un solo evento compartido; si marcas personas, se crea uno para cada una.`)) : null;
+
+  function refrescar() {
+    for (const f of filas) {
+      const ya = yaEstaEnTodos(f.ev);
+      f.chk.disabled = ya;
+      if (ya) f.chk.checked = false; else if (f.estabaYa) f.chk.checked = true;
+      f.estabaYa = ya;
+      f.estado.textContent = ya ? ' · ya está' : '';
+      f.nodo.classList.toggle('ya', ya);
+    }
+    actualizar();
+  }
+  function actualizar() {
+    const n = filas.filter((f) => f.chk.checked && !f.chk.disabled).length;
+    botonImportar.disabled = n === 0;
+    botonImportar.textContent = n ? `Importar ${n} ${n === 1 ? 'evento' : 'eventos'}` : 'Importar';
+  }
+  const cuando = (ev) => {
+    const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : ' · todo el día';
+    if (ev.repeticion) return `${cap(descripcionRepeticion(ev))} desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}${hora}`;
+    if (ev.fechas) return `${ev.fechas.length} fechas, del ${fechaCorta(ev.fechas[0])} al ${fechaCorta(ev.fechas[ev.fechas.length - 1])}${hora}`;
+    return `${cap(fechaCorta(ev.fecha))}${hora}`;
+  };
+
+  async function leer() {
+    filas = []; lista.replaceChildren(); mensaje.replaceChildren(); botonImportar.disabled = true;
+    const f = archivo.files && archivo.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { mensaje.append(el('p', { class: 'error-txt', role: 'alert' }, 'El archivo es demasiado grande (máximo 2 MB).')); return; }
+    let r;
+    try { r = leerICS(await f.text(), { desde: hoyISO() }); } catch { r = { error: 'No se ha podido leer el archivo.' }; }
+    if (r.error) { mensaje.append(el('p', { class: 'error-txt', role: 'alert' }, r.error)); return; }
+    try {
+      existentes = await D.eventosEspacio(S.espacio.id);
+      porDueno.clear(); compartidos.clear();
+      for (const e of existentes) {
+        const k = claveEv(e.titulo, e.fecha, e.hora_inicio);
+        if (e.compartido) compartidos.add(k);
+        if (!porDueno.has(e.owner_id)) porDueno.set(e.owner_id, new Set());
+        porDueno.get(e.owner_id).add(k);
+      }
+    } catch { /* sin esta comprobación se importa igualmente */ }
+    const varios = r.eventos.filter((e) => e.variosDias > 0).length;
+    mensaje.append(...[
+      el('p', {}, r.eventos.length ? `${r.eventos.length} ${r.eventos.length === 1 ? 'evento' : 'eventos'} de hoy en adelante.` : 'No hay eventos de hoy en adelante en este archivo.'),
+      r.pasados ? el('p', { class: 'suave' }, `${r.pasados} ${r.pasados === 1 ? 'ya pasó y no se importa' : 'ya pasaron y no se importan'}.`) : null,
+      varios ? el('p', { class: 'suave' }, `${varios} ${varios === 1 ? 'dura' : 'duran'} varios días: se apunta solo el primer día.`) : null,
+      r.truncado ? el('p', { class: 'suave' }, `El archivo trae mucho: se importan como máximo ${LIMITES_ICS.eventos} eventos y las repeticiones que no son semanales se cortan a unos ${Math.round(LIMITES_ICS.dias / 30)} meses.`) : null,
+      r.omitidos.length ? el('details', {}, el('summary', { class: 'suave' }, `${r.omitidos.length} no se pueden importar`),
+        el('ul', { class: 'lista-simple' }, r.omitidos.map((o) => el('li', {}, `${o.titulo}: ${o.motivo}`)))) : null,
+    ].filter(Boolean));
+    filas = r.eventos.map((ev) => {
+      const chk = el('input', { type: 'checkbox', checked: true, onchange: actualizar });
+      const estado = el('span', { class: 'suave' });
+      const tipoFila = el('select', { class: 'tipo-fila', 'aria-label': `Tipo de «${ev.titulo}»` },
+        el('option', { value: '' }, 'Como el resto'), TIPOS.map((t) => el('option', { value: t.id }, `${t.icono} ${t.nombre}`)));
+      const nodo = el('div', { class: 'fila-import-ics' },
+        el('label', { class: 'check-fila fila-import' }, chk,
+          el('span', {}, el('strong', {}, ev.titulo), el('br'), el('span', { class: 'suave' }, cuando(ev)), estado)),
+        tipoFila);
+      return { ev, chk, estado, nodo, tipoFila, estabaYa: false };
+    });
+    lista.replaceChildren(
+      filas.length ? el('button', { type: 'button', class: 'enlace', onclick: () => { const libres = filas.filter((x) => !x.chk.disabled); const todos = libres.every((x) => x.chk.checked); libres.forEach((x) => { x.chk.checked = !todos; }); actualizar(); } }, 'Marcar / desmarcar todos') : null,
+      ...filas.map((x) => x.nodo));
+    refrescar();
+  }
+  archivo.addEventListener('change', leer);
+
+  botonImportar.onclick = () => conCarga(botonImportar, async () => {
+    const registros = [];
+    for (const f of filas.filter((x) => x.chk.checked && !x.chk.disabled)) {
+      const ev = f.ev, tipo = f.tipoFila.value || tipoSel.value;
+      for (const o of objetivos) {
+        for (const fecha of fechasDe(ev)) {
+          if (existe(ev, fecha, o)) continue;
+          registros.push({
+            espacio_id: S.espacio.id, owner_id: o === 'todos' ? S.user.id : o, creado_por: S.user.id, compartido: o === 'todos',
+            tipo, titulo: ev.titulo, fecha, hora_inicio: ev.hora_inicio || null, hora_fin: ev.hora_fin || null, notas: ev.notas || null,
+            repeticion: ev.repeticion || null, repite_hasta: ev.repite_hasta || null, excepciones: ev.excepciones || [],
+            ...(ev.dias_semana && ev.dias_semana.length ? { dias_semana: ev.dias_semana } : {}),
+          });
+        }
+      }
+    }
+    if (!registros.length) return;
+    await D.crearEventos(registros);
+    cerrar(); S.rango = null;
+    aviso(`${registros.length} ${registros.length === 1 ? 'evento importado' : 'eventos importados'}`);
+    await cargarVista(true);
+  });
+
+  const cerrar = modal('Importar un calendario (.ics)', el('div', { class: 'formulario' },
+    el('p', { class: 'suave' }, 'Elige un archivo .ics (Google Calendar, Outlook, Apple…). Se lee en tu móvil y no se sube a ningún sitio. Es una importación puntual: si el calendario original cambia, la app no se entera.'),
+    el('label', {}, 'Archivo', archivo),
+    mensaje,
+    el('label', {}, 'Tipo de todos los eventos', tipoSel),
+    chipsQuien,
+    lista,
+    el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'), botonImportar)));
 }
 
 function abrirBorradoSerie(ev, fecha, cerrarEditor) {

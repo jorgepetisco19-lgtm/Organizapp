@@ -106,7 +106,11 @@ export async function cargarMenu(espacioId, desde, hasta) {
 
 export const eventosDe = async (espacioId, ownerId) =>
   ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).eq('owner_id', ownerId));
-export const crearEventos = async (filas) => ok(await sb.from('eventos').insert(filas));
+export async function crearEventos(filas) {
+  for (let i = 0; i < filas.length; i += 300) ok(await sb.from('eventos').insert(filas.slice(i, i + 300)));
+}
+// Todos los eventos del calendario que quien llama puede ver (para detectar los que ya están al importar)
+export const eventosEspacio = async (espacioId) => ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId));
 
 // ---------- líneas: pasos de una tarea y lista de la compra ----------
 const porOrden = (a, b) => (a.orden - b.orden) || String(a.creada).localeCompare(String(b.creada));

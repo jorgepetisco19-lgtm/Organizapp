@@ -323,3 +323,9 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .dia-btn { min-height: 44px; padding: 0; font-weight: 700; }
 .dia-btn[aria-pressed="true"] { border-color: var(--acento); background: color-mix(in srgb, var(--acento) 18%, var(--superficie)); }
 .dias-hint { margin: 2px 0 0; }
+
+/* importar .ics: cada evento con su selector de tipo */
+.fila-import-ics { border-bottom: 1px solid var(--borde); padding-bottom: 6px; margin-bottom: 4px; }
+.fila-import-ics .tipo-fila { margin: 0 0 4px 1.8rem; width: auto; max-width: 14rem; min-height: 36px; font-size: .88rem; }
+.fila-import-ics .fila-import { border-bottom: 0; }
+.fila-import-ics.ya { opacity: .55; }

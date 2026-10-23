@@ -952,6 +952,64 @@ with sync_playwright() as p:
     db = page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")
     comprobar([e for e in db['eventos'] if e['titulo'] == 'Fútbol sala'][0]['dias_semana'] == [1, 3], 'y se guarda [martes, jueves]')
 
+    print('13p) Importar un archivo de calendario (.ics)')
+    ICS = '\r\n'.join([
+        'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//prueba//ES',
+        'BEGIN:VEVENT', 'UID:futbol1', 'SUMMARY:Clásico en la tele', 'DTSTART:20261101T190000Z', 'DTEND:20261101T210000Z', 'DESCRIPTION:Partido\\, canal 1', 'END:VEVENT',
+        'BEGIN:VEVENT', 'UID:pil', 'SUMMARY:Pilates ICS', 'DTSTART:20261027T190000', 'DTEND:20261027T200000', 'RRULE:FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20261217T000000Z', 'EXDATE;VALUE=DATE:20261105', 'END:VEVENT',
+        'BEGIN:VEVENT', 'UID:med', 'SUMMARY:Medicación', 'DTSTART:20261026T090000', 'RRULE:FREQ=DAILY;COUNT=3', 'END:VEVENT',
+        'BEGIN:VEVENT', 'UID:tor', 'SUMMARY:Torneo', 'DTSTART;VALUE=DATE:20261114', 'DTEND;VALUE=DATE:20261117', 'END:VEVENT',
+        'BEGIN:VEVENT', 'UID:mes', 'SUMMARY:Primer lunes', 'DTSTART:20261005T090000', 'RRULE:FREQ=MONTHLY;BYDAY=1MO', 'END:VEVENT',
+        'BEGIN:VEVENT', 'UID:viejo', 'SUMMARY:Ya pasó', 'DTSTART:20261020T200000', 'END:VEVENT',
+        'END:VCALENDAR', ''])
+    subir = lambda nombre, contenido: page.locator('.modal input[type="file"]').set_input_files({'name': nombre, 'mimeType': 'text/calendar', 'buffer': contenido.encode('utf-8')})
+    tab(page, 'Más')
+    page.get_by_role('button', name=re.compile('Importar un archivo de calendario')).click()
+    subir('partidos.txt', 'esto no es un calendario'); page.wait_for_timeout(300)
+    comprobar('no parece un calendario' in page.locator('.modal').inner_text(), 'un archivo que no es .ics da un aviso claro')
+    subir('partidos.ics', ICS); page.wait_for_timeout(500)
+    txt = page.locator('.modal').inner_text()
+    comprobar('4 eventos de hoy en adelante' in txt, 'lee los 4 eventos válidos: ' + txt[txt.find('eventos de hoy') - 12: txt.find('eventos de hoy') + 20].replace('\n', ' '))
+    comprobar('1 ya pasó y no se importa' in txt and 'null' not in txt, 'avisa de los pasados (y no sale ningún «null» suelto)')
+    comprobar('1 no se pueden importar' in txt, 'avisa de lo que no se puede importar (primer lunes de cada mes)')
+    comprobar('dura varios días' in txt, 'avisa de los eventos de varios días')
+    comprobar(page.locator('.modal .chip-capa').count() >= 3, 'ofrece las personas y «Los dos / Todos» para elegir de quién son')
+    comprobar(page.locator('.modal .chip-capa[aria-pressed="true"]').count() == 1, 'por defecto, solo para uno mismo')
+    page.locator('.modal .chip-capa', has_text='Paula').click()
+    comprobar(page.locator('.modal .chip-capa[aria-pressed="true"]').count() == 2, 'se pueden marcar varias personas')
+    page.get_by_label('Tipo de todos los eventos').select_option('deporte')
+    page.get_by_label('Tipo de «Torneo»').select_option('compromiso')
+    comprobar('Cada semana (mar y jue)' in page.locator('.modal').inner_text(), 'la serie semanal se enseña como serie con sus días')
+    page.screenshot(path=f'{CAP}/13p-importar-ics.png', full_page=True)
+    boton_ics = page.locator('.modal').get_by_role('button', name=re.compile(r'^Importar \d'))
+    comprobar('Importar 4 eventos' in boton_ics.inner_text(), 'el botón dice cuántos: ' + boton_ics.inner_text())
+    boton_ics.click(); page.wait_for_timeout(700)
+    comprobar(page.locator('.modal').count() == 0, 'el diálogo se cierra al importar')
+    db = page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")
+    ev_ = lambda t: [e for e in db['eventos'] if e['titulo'] == t]
+    cl = ev_('Clásico en la tele')
+    comprobar(len(cl) == 2 and {e['owner_id'] for e in cl} == {USUARIOS_ID['jorge'], USUARIOS_ID['paula']} and all(e['tipo'] == 'deporte' and e['hora_inicio'].startswith('20:00') and e['hora_fin'].startswith('22:00') and e['fecha'] == '2026-11-01' for e in cl), 'el partido se crea para Jorge y para Paula, en deporte, a las 20:00 (hora de Madrid)')
+    comprobar('canal 1' in (cl[0]['notas'] or '') and 'Partido, canal 1' in cl[0]['notas'], 'y con su descripción')
+    pi = ev_('Pilates ICS')
+    comprobar(len(pi) == 2 and all(e['repeticion'] == 'semanal' and e['dias_semana'] == [1, 3] and e['repite_hasta'] == '2026-12-17' and e['excepciones'] == ['2026-11-05'] and e['fecha'] == '2026-10-27' for e in pi), 'la serie semanal conserva sus días, su fin y el día quitado')
+    me = ev_('Medicación')
+    comprobar(len(me) == 6 and sorted({e['fecha'] for e in me}) == ['2026-10-26', '2026-10-27', '2026-10-28'], 'la repetición diaria se convierte en 3 fechas sueltas (por 2 personas)')
+    to = ev_('Torneo')
+    comprobar(len(to) == 2 and all(e['tipo'] == 'compromiso' and e['fecha'] == '2026-11-14' for e in to), 'el tipo elegido en una fila manda sobre el de todos')
+    comprobar(not ev_('Ya pasó') and not ev_('Primer lunes'), 'lo pasado y lo no soportado no se importa')
+    # segunda vez: no duplica
+    tab(page, 'Más'); page.get_by_role('button', name=re.compile('Importar un archivo de calendario')).click()
+    subir('partidos.ics', ICS); page.wait_for_timeout(500)
+    comprobar(page.locator('.modal .fila-import-ics.ya').count() == 4 and page.locator('.modal').get_by_role('button', name=re.compile(r'^Importar \d')).count() == 0, 'al importar el mismo archivo otra vez, todo sale «ya está» (Jorge) y no hay nada que importar')
+    page.locator('.modal .chip-capa', has_text='Paula').click()
+    comprobar(page.locator('.modal .fila-import-ics.ya').count() == 4, 'también con Jorge y Paula marcados')
+    page.locator('.modal .chip-capa', has_text=re.compile('^(Los dos|Todos)$')).click(); page.wait_for_timeout(200)
+    comprobar(page.locator('.modal .fila-import-ics.ya').count() == 0 and page.locator('.modal .chip-capa[aria-pressed="true"]').count() == 1, 'con «Los dos / Todos» (evento compartido) ya sí se pueden importar, y desmarca a las personas')
+    page.locator('.modal').get_by_role('button', name=re.compile(r'^Importar \d')).click(); page.wait_for_timeout(700)
+    db = page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")
+    cl = [e for e in db['eventos'] if e['titulo'] == 'Clásico en la tele']
+    comprobar(len(cl) == 3 and sum(1 for e in cl if e['compartido']) == 1, 'ahora hay además un partido compartido (3 en total)')
+
     print('13i) Sin calendario: código de amigo desde la bienvenida')
     cambiar_usuario('cuarto')
     expect(page.get_by_role('button', name='Crear calendario')).to_be_visible()
