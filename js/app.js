@@ -11,6 +11,7 @@ import { crearXlsx, leerXlsx } from './xlsx.js';
 // ---------- utilidades de pantalla ----------
 const $ = (s, r = document) => r.querySelector(s);
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const pad2 = (n) => String(n).padStart(2, '0');
 
 function el(tag, props, ...hijos) {
   const n = document.createElement(tag);
@@ -271,27 +272,115 @@ function filaEvento({ ev, fecha }, compacta = false) {
     S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
 }
 
-// Lista de eventos de un día: en una columna, o (opción de Más) en una columna por persona, con los de
-// "todos" a todo el ancho, y cada tramo horario en su propia fila.
-function agendaEventos(lista, vacio) {
+// Lista de eventos de un día. Dos formas:
+//  - una sola columna (por defecto), o
+//  - (opción de Más) una columna por persona. Con hora: línea de tiempo proporcional, cada evento a su altura y con
+//    la altura de su duración, de modo que lo que coincide en el tiempo queda a la misma altura. Los eventos de
+//    "todos" ocupan todo el ancho (o salen en cada columna si coinciden con un plan de una persona).
+//    Sin hora ("Todo el día"): arriba. Los huecos largos sin nada se recortan para no hacer la pantalla enorme.
+const PX_MIN = 1.2;      // píxeles por minuto
+const HUECO_MIN = 120;   // un hueco de 2 h o más sin eventos se acorta
+const HUECO_PX = 34;
+const EJE_PX = 40;       // ancho de la columna de horas
+const aMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+function rejillaPorHoras(items, cols) { // para eventos sin hora o tareas: una fila por tramo horario
+  const hora = (x) => (x.ev.hora_inicio ? hhmm(x.ev.hora_inicio) : '');
+  const horas = [...new Set(items.map(hora))].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+  return horas.map((h) => {
+    const delTramo = items.filter((x) => hora(x) === h);
+    const comunes = delTramo.filter((x) => x.ev.compartido);
+    const sueltos = delTramo.filter((x) => !x.ev.compartido);
+    return el('div', { class: 'cols-tramo' },
+      comunes.map((x) => filaEvento(x, true)),
+      sueltos.length
+        ? el('div', { class: 'cols-fila' }, cols.map((m) => el('div', { class: 'cols-celda' },
+          sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => filaEvento(x, true)))))
+        : null);
+  });
+}
+
+function lineaDeTiempo(conHora, cols) {
+  const n = cols.length;
+  const base = conHora.map((x) => {
+    const a = aMin(hhmm(x.ev.hora_inicio));
+    const b = Math.max(x.ev.hora_fin ? aMin(hhmm(x.ev.hora_fin)) : a + 45, a + 40); // los muy cortos o sin fin se ven con un mínimo
+    return { x, a, b };
+  });
+  const solapa = (p, q) => p.a < q.b && q.a < p.b;
+  const deUnaPersona = base.filter((i) => !i.x.ev.compartido);
+  const piezas = [];
+  for (const it of base) {
+    if (!it.x.ev.compartido) {
+      const k = cols.findIndex((m) => m.id === it.x.ev.owner_id);
+      if (k >= 0) piezas.push({ ...it, col: k });
+    } else if (deUnaPersona.some((p) => solapa(it, p))) cols.forEach((_, k) => piezas.push({ ...it, col: k })); // coincide con un plan: sale en cada columna
+    else piezas.push({ ...it, col: 'todos' });
+  }
+
+  // carriles: dentro de una misma columna, los que coinciden en el tiempo se reparten el ancho
+  const grupos = new Map();
+  for (const g of piezas) { const k = String(g.col); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(g); }
+  for (const lista of grupos.values()) {
+    lista.sort((p, q) => p.a - q.a || p.b - q.b);
+    let racimo = [], carriles = [], fin = -1;
+    const cerrar = () => { racimo.forEach((g) => { g.total = carriles.length; }); racimo = []; carriles = []; fin = -1; };
+    for (const g of lista) {
+      if (racimo.length && g.a >= fin) cerrar();
+      let c = carriles.findIndex((f) => f <= g.a);
+      if (c < 0) { c = carriles.length; carriles.push(0); }
+      carriles[c] = g.b; g.carril = c; racimo.push(g); fin = Math.max(fin, g.b);
+    }
+    if (racimo.length) cerrar();
+  }
+
+  // tramos de tiempo con eventos (de hora en hora); los huecos largos se acortan
+  const tramos = [];
+  for (const g of [...piezas].sort((p, q) => p.a - q.a)) {
+    const a = Math.floor(g.a / 60) * 60, b = Math.ceil(g.b / 60) * 60;
+    const ult = tramos[tramos.length - 1];
+    if (ult && a - ult.b < HUECO_MIN) ult.b = Math.max(ult.b, b); else tramos.push({ a, b });
+  }
+  let y = 0;
+  tramos.forEach((t, i) => { if (i) y += HUECO_PX; t.y = y; y += (t.b - t.a) * PX_MIN; });
+  const alto = y;
+  const yDe = (min) => { const t = tramos.find((t) => min >= t.a && min <= t.b); return t.y + (min - t.a) * PX_MIN; };
+
+  const eje = [], lineas = [];
+  tramos.forEach((t, i) => {
+    for (let h = t.a; h <= t.b; h += 60) {
+      const top = t.y + (h - t.a) * PX_MIN;
+      eje.push(el('span', { class: 'tl-hora', style: { top: `${top}px` } }, `${pad2(Math.floor(h / 60) % 24)}:00`));
+      lineas.push(el('div', { class: 'tl-linea', style: { top: `${top}px` } }));
+    }
+    if (i) eje.push(el('span', { class: 'tl-hueco', style: { top: `${tramos[i - 1].y + (tramos[i - 1].b - tramos[i - 1].a) * PX_MIN}px`, height: `${HUECO_PX}px` } }, '⋯'));
+  });
+
+  const eventos = piezas.map((g) => {
+    const b = filaEvento(g.x, true);
+    b.classList.add('tl-ev');
+    const ancho = g.col === 'todos' ? 100 / g.total : 100 / (n * g.total);
+    const izq = g.col === 'todos' ? (g.carril * 100) / g.total : ((g.col + g.carril / g.total) * 100) / n;
+    Object.assign(b.style, { top: `${yDe(g.a)}px`, height: `${yDe(g.b) - yDe(g.a) - 2}px`, left: `${izq}%`, width: `calc(${ancho}% - 4px)` });
+    return b;
+  });
+
+  return el('div', { class: 'tl', style: { height: `${alto}px` } },
+    el('div', { class: 'tl-eje' }, eje),
+    el('div', { class: 'tl-cols' }, lineas, eventos));
+}
+
+function agendaEventos(lista, vacio, proporcional = true) {
   if (!lista.length) return el('p', { class: 'vacio' }, vacio);
   const cols = visiblesCapas();
   if (S.vista !== 'columnas' || cols.length < 2 || cols.length > 3) return lista.map((x) => filaEvento(x));
-  const hora = (x) => (x.ev.hora_inicio ? hhmm(x.ev.hora_inicio) : '');
-  const horas = [...new Set(lista.map(hora))].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
-  return el('div', { class: 'agenda-cols', style: { '--n': cols.length } },
-    el('div', { class: 'cols-fila cols-cab' }, cols.map((m) => el('span', { class: 'cols-nombre', style: { '--c': m.color } }, el('span', { class: 'punto' }), m.nombre))),
-    horas.map((h) => {
-      const delTramo = lista.filter((x) => hora(x) === h);
-      const comunes = delTramo.filter((x) => x.ev.compartido);
-      const sueltos = delTramo.filter((x) => !x.ev.compartido);
-      return el('div', { class: 'cols-tramo' },
-        comunes.map((x) => filaEvento(x, true)),
-        sueltos.length
-          ? el('div', { class: 'cols-fila' }, cols.map((m) => el('div', { class: 'cols-celda' },
-            sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => filaEvento(x, true)))))
-          : null);
-    }));
+  const cab = el('div', { class: 'cols-fila cols-cab' }, cols.map((m) => el('span', { class: 'cols-nombre', style: { '--c': m.color } }, el('span', { class: 'punto' }), m.nombre)));
+  if (!proporcional) return el('div', { class: 'agenda-cols', style: { '--n': cols.length } }, cab, rejillaPorHoras(lista, cols));
+  const sinHora = lista.filter((x) => !x.ev.hora_inicio), conHora = lista.filter((x) => x.ev.hora_inicio);
+  return el('div', { class: 'agenda-cols agenda-tl', style: { '--n': cols.length } },
+    cab,
+    sinHora.length ? el('div', { class: 'tl-todo-dia' }, el('span', { class: 'tl-hora-fija' }, 'Todo el día'), rejillaPorHoras(sinHora, cols)) : null,
+    conHora.length ? lineaDeTiempo(conHora, cols) : null);
 }
 
 function chipsTipos(set, clave) {
@@ -347,7 +436,7 @@ function vistaInicio() {
       el('button', { class: 'primario', onclick: () => { S.tab = 'mas'; render(); } }, 'Invitar a tu pareja')) : null,
     esManana ? el('section', { class: 'seccion preparar' },
       el('h3', {}, '🛠️ Para dejar preparado hoy'),
-      agendaEventos(tareasHoy, 'Nada que preparar hoy.')) : null,
+      agendaEventos(tareasHoy, 'Nada que preparar hoy.', false)) : null,
     bloqueMenuDia(dia, `🍽️ Comida de ${esManana ? 'mañana' : 'hoy'}`),
     el('section', { class: 'seccion' },
       el('h3', {}, `🗓️ Agenda de ${esManana ? 'mañana' : 'hoy'}`),

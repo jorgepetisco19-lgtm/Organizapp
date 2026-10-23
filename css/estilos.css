@@ -203,3 +203,18 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .fila-evento.compacta { display: block; padding: 6px 8px; margin: 4px 0; min-height: 0; }
 .fila-evento.compacta .hora { display: block; font-size: .8rem; }
 .fila-evento.compacta .tit { font-size: .92rem; }
+
+/* línea de tiempo proporcional (agenda en columnas) */
+.agenda-tl .cols-cab { margin-left: 40px; }
+.tl-todo-dia { margin-left: 0; display: grid; grid-template-columns: 40px 1fr; align-items: start; }
+.tl-todo-dia > .tl-hora-fija { font-size: .68rem; color: var(--suave); padding-top: 6px; line-height: 1.1; }
+.tl { position: relative; margin: 6px 0 10px; }
+.tl-eje { position: absolute; left: 0; top: 0; bottom: 0; width: 40px; }
+.tl-hora { position: absolute; left: 0; width: 36px; transform: translateY(-50%); font-size: .72rem; color: var(--suave); font-variant-numeric: tabular-nums; }
+.tl-hueco { position: absolute; left: 0; width: 36px; display: flex; align-items: center; justify-content: center; color: var(--suave); }
+.tl-cols { position: absolute; left: 40px; right: 0; top: 0; bottom: 0; }
+.tl-linea { position: absolute; left: 0; right: 0; border-top: 1px solid var(--borde); }
+.fila-evento.tl-ev { position: absolute; margin: 0; padding: 3px 6px; min-height: 0; box-sizing: border-box; overflow: hidden; display: block; }
+.fila-evento.tl-ev .hora { font-size: .72rem; }
+.fila-evento.tl-ev .tit { font-size: .85rem; line-height: 1.15; }
+.fila-evento.tl-ev .notas { display: none; }
