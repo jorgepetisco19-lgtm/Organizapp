@@ -96,3 +96,15 @@ test('solo se importan las semanas y personas elegidas; las tareas de días pasa
   assert.equal(pasado.tareas.length, 1);
   assert.equal(pasado.omitidas, 1);
 });
+
+test('funciona con cualquier nombre y cualquier número de personas; mayúsculas y espacios no crean personas nuevas', () => {
+  const cab = ['Semana', 'Día', 'Momento', 'Hora', 'Persona', 'Plato', 'Cantidad', 'Unidad', 'Trabajo previo día anterior'];
+  const fila = (n) => [1, 'Lunes', 'Comida', '14:00', n, 'Lentejas', 300, 'g', 'Sí'];
+  const una = analizarImportacion([cab, fila('Nombre 1')]);
+  assert.deepEqual(una.plan.personas, ['Nombre 1']);
+  const tres = analizarImportacion([cab, fila('Ana'), fila('Luis'), fila('Marta')]);
+  assert.deepEqual(tres.plan.personas, ['Ana', 'Luis', 'Marta']);
+  assert.equal(planAFechas(tres.plan, '2026-11-02', [1], { hoy: '2026-10-23' }).filas.length, 3);
+  const raras = analizarImportacion([cab, fila('  ana '), fila('ANA'), fila('Álex'), fila('alex')]);
+  assert.deepEqual(raras.plan.personas, ['ana', 'Álex']);
+});

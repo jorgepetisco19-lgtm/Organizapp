@@ -1421,6 +1421,8 @@ function zonaPlanSemanal(plan, cerrar) {
     const personas = new Set(plan.personas.filter((n) => mapeo[n]));
     if (!semanas.length) return { error: 'Marca al menos una semana.' };
     if (!personas.size) return { error: 'No has asignado ninguna persona.' };
+    const destinos = [...personas].map((n) => mapeo[n]);
+    if (new Set(destinos).size !== destinos.length) return { error: 'Dos nombres del archivo apuntan a la misma persona: pon uno en «No importar».' };
     const r = planAFechas(plan, lunes, semanas, { personas, horaTarea: horaIn.value || '21:00', hoy });
     if (!tareasChk.checked) { r.omitidas = 0; r.tareas = []; }
     return { lunes, semanas, personas, ...r };
@@ -1515,6 +1517,8 @@ function abrirImportar() {
       ...selects,
       el('p', { class: 'suave' }, 'Lo que ya hubiera escrito en esas mismas franjas se sustituye.'),
       el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+        const destinos = leido.personas.filter((n) => mapeo[n]).map((n) => mapeo[n]);
+        if (new Set(destinos).size !== destinos.length) throw new Error('Dos nombres del archivo apuntan a la misma persona: pon uno en «No importar».');
         const filas = leido.filas.filter((x) => mapeo[x.persona]).map((x) => ({
           espacio_id: S.espacio.id, owner_id: mapeo[x.persona], fecha: x.fecha, franja: x.franja, hora: x.hora, texto: x.texto,
         }));

@@ -1,6 +1,6 @@
 // Organizapp · service worker.
 // IMPORTANTE: sube este número en CADA despliegue. Así los móviles descargan la versión nueva.
-const VERSION = '17';
+const VERSION = '18';
 
 const CACHE = `organizapp-v${VERSION}`;
 const ARCHIVOS = [

@@ -254,6 +254,7 @@ export function leerPlanSemanal(filas) {
   const [iS, iD, iM, iH, iP, iPl, iC, iU] = ['semana', 'dia', 'momento', 'hora', 'persona', 'plato', 'cantidad', 'unidad'].map(ix);
   const franjas = new Set(FRANJAS.map((f) => f.id));
   const out = [], errores = [];
+  const nombres = new Map(); // «ana», «Ana » y «ANA» son la misma persona: se queda la primera forma escrita
   for (let i = 1; i < filas.length; i++) {
     const r = filas[i];
     if (!r || r.every((x) => String(x ?? '').trim() === '')) continue;
@@ -261,7 +262,10 @@ export function leerPlanSemanal(filas) {
     const dia = DIAS_PLAN.indexOf(clave(r[iD]));
     const franja = clave(r[iM]);
     const hora = iH >= 0 ? horaDeCelda(r[iH]) : '';
-    const persona = String(r[iP] || '').trim();
+    const personaCruda = String(r[iP] || '').replace(/\s+/g, ' ').trim();
+    const kp = sinTildes(personaCruda.toLowerCase());
+    if (personaCruda && !nombres.has(kp)) nombres.set(kp, personaCruda);
+    const persona = nombres.get(kp) || '';
     const plato = String(r[iPl] || '').replace(/\s+/g, ' ').trim();
     if (!Number.isInteger(semana) || semana < 1) { errores.push({ linea: i + 1, motivo: 'Semana no válida' }); continue; }
     if (dia < 0) { errores.push({ linea: i + 1, motivo: `Día no válido: ${r[iD]}` }); continue; }
