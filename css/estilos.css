@@ -75,7 +75,7 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .marco { max-width: 760px; margin: 0 auto; padding: 0 12px calc(var(--nav-h) + 90px); }
 .cab { position: sticky; top: 0; z-index: 5; background: var(--fondo); padding: 10px 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: calc(10px + env(safe-area-inset-top)); }
 .tabs {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr);
   background: var(--superficie); border-top: 1px solid var(--borde); padding-bottom: env(safe-area-inset-bottom);
 }
 .tabs button { border: 0; border-radius: 0; background: none; min-height: var(--nav-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: .78rem; color: var(--suave); }
@@ -280,3 +280,33 @@ details.plegable > * + * { margin-top: .5rem; }
 .fila-import { border-bottom: 1px solid color-mix(in srgb, var(--suave) 18%, transparent); }
 .fila-import.ya { opacity: .55; cursor: default; }
 .rol-miembro { width: auto; min-width: 7rem; padding: .3rem .5rem; font-size: .9rem; margin-left: auto; }
+
+/* ---- tareas hechas, pasos y lista de la compra ---- */
+.evento-bloque { margin: 6px 0; }
+.evento-bloque .fila-evento, .evento-bloque .fila-evento.compacta { margin: 0; flex: 1; min-width: 0; }
+.evento-fila { display: flex; align-items: stretch; gap: 4px; }
+.hecho-chk { display: flex; align-items: center; justify-content: center; min-width: 44px; cursor: pointer; }
+.hecho-chk input { width: 1.3rem; height: 1.3rem; accent-color: var(--acento); }
+.fila-evento.hecha .tit, .fila-evento.hecha .notas { text-decoration: line-through; color: var(--suave); }
+.fila-evento.hecha { opacity: .7; }
+.fila-evento .progreso { color: var(--suave); font-weight: 400; font-size: .85rem; }
+.pasos { list-style: none; margin: 2px 0 0 48px; padding: 0; display: grid; gap: 0; }
+.paso { display: flex; align-items: flex-start; gap: .6rem; padding: .35rem 0; cursor: pointer; font-size: .95rem; }
+.paso input { width: 1.2rem; height: 1.2rem; margin-top: .1rem; flex: none; accent-color: var(--acento); }
+.paso.hecho span { text-decoration: line-through; color: var(--suave); }
+.pasos-ed { margin: 0; }
+.pasos-ed .paso-fila { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+.pasos-ed .paso { flex: 1; }
+.fila-paso-nuevo, .compra-nuevo { display: flex; gap: .5rem; margin: .4rem 0; }
+.fila-paso-nuevo input, .compra-nuevo input { flex: 1; min-width: 0; }
+button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); background: none; border: none; font-size: 1.05rem; }
+.compra-fila { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid color-mix(in srgb, var(--suave) 18%, transparent); }
+.compra-chk { display: flex; align-items: center; gap: .8rem; flex: 1; padding: .7rem 0; cursor: pointer; font-size: 1.05rem; min-width: 0; }
+.compra-chk input { width: 1.4rem; height: 1.4rem; flex: none; accent-color: var(--acento); }
+.compra-chk span { overflow-wrap: anywhere; }
+.compra-fila.hecha .compra-chk span { text-decoration: line-through; color: var(--suave); }
+.compra-sep { margin: 1.1rem 0 .2rem; font-size: .95rem; color: var(--suave); }
+.compra-resumen { margin: .2rem 0 .4rem; }
+.compra .peligro { margin-top: 1rem; }
+.compra .barra-nav h2 { text-align: left; }
+.tabs button { min-width: 0; font-size: .74rem; }

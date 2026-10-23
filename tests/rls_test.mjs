@@ -629,6 +629,116 @@ for (let i = 0; i < 25; i++) { ultimo20 = await q(`select public.crear_espacio('
 r = await q(`select count(*)::int n from public.miembros where user_id=$1`, [U.jorge.id]);
 ok('Tope de 20 calendarios por persona', r.rows[0].n === 20 && falla(ultimo20, 'máximo de 20'), `${r.rows[0].n} ${ultimo20.error}`);
 
+// ---------- 10b. Tareas hechas, pasos de tarea y lista de la compra ----------
+console.log('\n10b. Líneas: pasos de tarea y lista de la compra');
+await db.exec('reset role');
+const eL = '00000000-0000-0000-0000-0000000000f1', eOtro = '00000000-0000-0000-0000-0000000000f2';
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Listas',$2),($3,'Otro',$2)`, [eL, U.paula.id, eOtro]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values
+  ($1,$2,'pareja','#111111'),($1,$3,'pareja','#222222'),($1,$4,'amigo','#333333'),($5,$2,'pareja','#111111')`, [eL, U.paula.id, U.tercero.id, U.amigo.id, eOtro]);
+await como(U.paula);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'tarea','Hacer la compra','2026-11-03',$2) returning id`, [eL, U.paula.id]);
+const evTarea = r.rows[0]?.id;
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','Un plan','2026-11-03',$2) returning id`, [eL, U.paula.id]);
+const evPlan = r.rows[0]?.id;
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'tarea','Tarea de otro calendario','2026-11-03',$2) returning id`, [eOtro, U.paula.id]);
+const evOtro = r.rows[0]?.id;
+r = await q(`update public.eventos set hechas = array['2026-11-03'::date] where id=$1 returning hechas`, [evTarea]);
+ok('Paula marca su tarea como hecha (columna hechas)', !r.error && r.rows.length === 1, r.error);
+const ins = (esp, ev, texto, quien) => q(`insert into public.lineas(espacio_id,evento_id,texto,creado_por) values ($1,$2,$3,$4) returning id`, [esp, ev, texto, quien]);
+
+r = await ins(eL, evTarea, 'Leche', U.paula.id);
+ok('Paula añade un paso a su tarea', !r.error && r.rows.length === 1, r.error);
+const lPaso = r.rows[0]?.id;
+r = await ins(eL, null, 'Pan', U.paula.id);
+ok('Paula añade un producto a la lista de la compra', !r.error && r.rows.length === 1, r.error);
+const lCompra = r.rows[0]?.id;
+r = await ins(eL, evPlan, 'Paso en un plan', U.paula.id);
+ok('Solo las tareas llevan pasos (un plan no)', !!r.error);
+r = await ins(eL, evOtro, 'Paso de una tarea de otro calendario', U.paula.id);
+ok('Una línea no puede colgar de una tarea de otro calendario', !!r.error);
+r = await ins(eOtro, evTarea, 'Cruce', U.paula.id);
+ok('Ni la tarea de este calendario con el id de otro calendario', !!r.error);
+r = await ins(eL, null, 'Suplantada', U.tercero.id);
+ok('No se puede crear una línea a nombre de otra persona', !!r.error);
+r = await ins(eL, null, '', U.paula.id);
+ok('Una línea vacía se rechaza', !!r.error);
+r = await ins(eL, null, 'x'.repeat(201), U.paula.id);
+ok('Una línea de más de 200 caracteres se rechaza', !!r.error);
+
+await como(U.amigo);
+r = await q(`select id from public.lineas where espacio_id=$1`, [eL]);
+ok('Un amigo del calendario ve los pasos y la lista de la compra', r.rows.length === 2, r.error || r.rows.length);
+r = await ins(eL, null, 'Huevos', U.amigo.id);
+ok('Un amigo añade a la lista de la compra', !r.error && r.rows.length === 1, r.error);
+const lAmigo = r.rows[0]?.id;
+r = await q(`update public.lineas set hecha=true where id=$1 returning id`, [lCompra]);
+ok('Un amigo marca un producto de la compra', !r.error && r.rows.length === 1, r.error);
+r = await ins(eL, evTarea, 'Paso colado', U.amigo.id);
+ok('Un amigo NO añade pasos a la tarea de otra persona', !!r.error);
+r = await q(`update public.lineas set hecha=true where id=$1 returning id`, [lPaso]);
+ok('Un amigo NO marca los pasos de la tarea de otra persona', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`delete from public.lineas where id=$1 returning id`, [lPaso]);
+ok('Un amigo NO borra los pasos de la tarea de otra persona', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`update public.eventos set hechas = array['2026-11-04'::date] where id=$1 returning id`, [evTarea]);
+ok('Un amigo NO marca como hecha la tarea de otra persona', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`update public.lineas set evento_id=$2 where id=$1`, [lAmigo, evTarea]);
+ok('No se puede mover una línea a otra tarea', falla(r, 'permission denied'), r.error);
+r = await q(`update public.lineas set espacio_id=$2 where id=$1`, [lAmigo, eOtro]);
+ok('Ni a otro calendario', falla(r, 'permission denied'), r.error);
+
+await como(U.tercero);
+r = await ins(eL, evTarea, 'Mantequilla', U.tercero.id);
+ok('Una pareja (no creadora) sí añade pasos a la tarea de Paula', !r.error && r.rows.length === 1, r.error);
+r = await q(`update public.lineas set hecha=true where id=$1 returning id`, [lPaso]);
+ok('Y los marca', !r.error && r.rows.length === 1, r.error);
+
+await como(U.jorge);
+r = await q(`select * from public.lineas where espacio_id=$1`, [eL]);
+ok('Alguien de fuera no ve ninguna línea', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await ins(eL, null, 'Intruso', U.jorge.id);
+ok('Alguien de fuera no añade a la lista de la compra', !!r.error);
+r = await q(`update public.lineas set hecha=true where id=$1 returning id`, [lCompra]);
+ok('Ni marca nada', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`delete from public.lineas where id=$1 returning id`, [lCompra]);
+ok('Ni borra nada', !r.error && r.rows.length === 0, r.error || r.rows.length);
+
+await como('anon');
+r = await q(`select * from public.lineas`);
+ok('Sin sesión no se puede leer ninguna línea', falla(r, 'permission denied'), r.error);
+
+await como(U.amigo);
+r = await q(`delete from public.lineas where id=$1 returning id`, [lAmigo]);
+ok('Un amigo borra su producto de la lista de la compra', !r.error && r.rows.length === 1, r.error);
+
+await como(U.paula);
+// límites
+await db.exec('reset role');
+await db.query(`insert into public.lineas(espacio_id,evento_id,texto,creado_por) select $1, null, 'p'||g, $2 from generate_series(1,298) g`, [eL, U.paula.id]);
+await como(U.paula);
+r = await q(`select count(*)::int n from public.lineas where espacio_id=$1 and evento_id is null`, [eL]);
+const nCompra = r.rows[0].n;
+r = await ins(eL, null, 'una más', U.paula.id);
+ok(`La lista de la compra admite 300 líneas (hay ${nCompra})`, nCompra === 300 || !r.error, r.error);
+r = await ins(eL, null, 'otra más', U.paula.id);
+ok('La 301 se rechaza', falla(r, '300 líneas'), r.error);
+await db.exec('reset role');
+await db.query(`insert into public.lineas(espacio_id,evento_id,texto,creado_por) select $1, $2, 's'||g, $3 from generate_series(1,98) g`, [eL, evTarea, U.paula.id]);
+await como(U.paula);
+r = await q(`select count(*)::int n from public.lineas where evento_id=$1`, [evTarea]);
+r = await ins(eL, evTarea, 'paso 100', U.paula.id);
+r = await ins(eL, evTarea, 'paso 101', U.paula.id);
+ok('Una tarea admite 100 pasos y el 101 se rechaza', falla(r, '100 pasos'), r.error);
+
+// borrados en cascada
+r = await q(`delete from public.eventos where id=$1 returning id`, [evTarea]);
+r = await q(`select count(*)::int n from public.lineas where evento_id=$1`, [evTarea]);
+ok('Al borrar la tarea se borran sus pasos', r.rows[0].n === 0, r.error || r.rows[0].n);
+r = await q(`select public.eliminar_espacio($1)`, [eL]);
+await db.exec('reset role');
+r = await q(`select count(*)::int n from public.lineas where espacio_id=$1`, [eL]);
+ok('Al borrar el calendario se borra su lista de la compra', r.rows[0].n === 0, r.error || r.rows[0].n);
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -648,6 +758,10 @@ const mig5 = fs.readFileSync(process.env.SQL5_PATH || '/mnt/user-data/outputs/or
 let e5 = null;
 try { await v11.exec(mig5); await v11.exec(mig5); } catch (e) { e5 = e.message; }
 ok('La migración 05 se aplica dos veces sin errores', !e5, e5);
+const mig6 = fs.readFileSync(process.env.SQL6_PATH || '/mnt/user-data/outputs/organizapp/sql/06_hechas_y_lineas.sql', 'utf8');
+let e6 = null;
+try { await v11.exec(mig6); await v11.exec(mig6); } catch (e) { e6 = e.message; }
+ok('La migración 06 se aplica dos veces sin errores', !e6, e6);
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -661,7 +775,7 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

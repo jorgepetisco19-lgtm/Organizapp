@@ -363,8 +363,9 @@ export function planAFechas(plan, lunes, semanas, { personas = null, horaTarea =
       if (!porPlato.has(k)) porPlato.set(k, { franja: FRANJAS.find((x) => x.id === f.franja).nombre, plato: f.plato, quien: [] });
       if (!porPlato.get(k).quien.includes(f.persona)) porPlato.get(k).quien.push(f.persona);
     }
-    const notas = [...porPlato.values()].map((p) => `${p.franja}: ${p.plato} (${p.quien.join(', ')})`).join('\n').slice(0, 1000);
-    tareas.push({ fecha: dia, hora: horaTarea, titulo, notas });
+    // cada plato es un paso de la tarea (se marca al dejarlo hecho)
+    const lineas = [...porPlato.values()].map((p) => `${p.franja}: ${p.plato} (${p.quien.join(', ')})`.slice(0, 200)).slice(0, 100);
+    tareas.push({ fecha: dia, hora: horaTarea, titulo, lineas });
   }
   return { filas, tareas, omitidas };
 }

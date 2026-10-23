@@ -82,9 +82,10 @@ test('el plan se pone en fechas: comidas agrupadas, horas distintas y tareas del
   // tareas: una por día con trabajo previo, el día anterior, sin repetir platos
   assert.deepEqual(p.tareas.map((t) => [t.fecha, t.hora]), [['2026-11-01', '21:30'], ['2026-11-10', '21:30']]);
   assert.equal(p.tareas[0].titulo, 'Preparar para mañana (3 platos)');
-  assert.match(p.tareas[0].notas, /Comida: Lentejas \(Jorge, Paula\)/);
+  assert.ok(p.tareas[0].lineas.includes('Comida: Lentejas (Jorge, Paula)'));
+  assert.equal(p.tareas[0].lineas.length, 3);
   assert.equal(p.tareas[1].titulo, 'Preparar para mañana: Pollo asado');
-  assert.match(p.tareas[1].notas, /Comida: Pollo asado \(Paula\)/);
+  assert.deepEqual(p.tareas[1].lineas, ['Comida: Pollo asado (Paula)']);
 });
 
 test('solo se importan las semanas y personas elegidas; las tareas de días pasados se omiten', async () => {

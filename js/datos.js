@@ -102,6 +102,25 @@ export async function cargarMenu(espacioId, desde, hasta) {
 export const eventosDe = async (espacioId, ownerId) =>
   ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).eq('owner_id', ownerId));
 export const crearEventos = async (filas) => ok(await sb.from('eventos').insert(filas));
+
+// ---------- líneas: pasos de una tarea y lista de la compra ----------
+const porOrden = (a, b) => (a.orden - b.orden) || String(a.creada).localeCompare(String(b.creada));
+// Pasos de varias tareas, de 50 en 50 para no hacer la dirección demasiado larga.
+export async function cargarPasos(ids) {
+  const trozos = [];
+  for (let i = 0; i < ids.length; i += 50) trozos.push(ids.slice(i, i + 50));
+  const res = await Promise.all(trozos.map(async (t) => ok(await sb.from('lineas').select('*').in('evento_id', t))));
+  return res.flat().sort(porOrden);
+}
+export const cargarCompra = async (espacioId) =>
+  ok(await sb.from('lineas').select('*').eq('espacio_id', espacioId).is('evento_id', null)).sort(porOrden);
+export const crearLineas = async (filas) => ok(await sb.from('lineas').insert(filas).select('*'));
+export const guardarLinea = async (id, campos) =>
+  exactamente(ok(await sb.from('lineas').update(campos).eq('id', id).select('id')), 1);
+export const borrarLinea = async (id) =>
+  exactamente(ok(await sb.from('lineas').delete().eq('id', id).select('id')), 1);
+export const quitarMarcadasCompra = async (espacioId) =>
+  ok(await sb.from('lineas').delete().eq('espacio_id', espacioId).is('evento_id', null).eq('hecha', true));
 export const guardarEvento = async (id, campos) =>
   exactamente(ok(await sb.from('eventos').update(campos).eq('id', id).select('id')), 1);
 export const borrarEvento = async (id) =>

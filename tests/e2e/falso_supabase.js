@@ -9,8 +9,8 @@ var supabase = (function () {
     tercero: { id: '00000000-0000-0000-0000-00000000000c', email: 'tercero@test.com', user_metadata: { full_name: 'Tercero' } },
     cuarto: { id: '00000000-0000-0000-0000-00000000000d', email: 'cuarto@test.com', user_metadata: { full_name: 'Cuarto Nuevo' } },
   };
-  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [] });
-  const cargar = () => { try { return JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); } catch { return vacia(); } };
+  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [], lineas: [] });
+  const cargar = () => { try { const d = JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); if (!d.lineas) d.lineas = []; return d; } catch { return vacia(); } };
   const guardar = (db) => localStorage.setItem(CLAVE_DB, JSON.stringify(db));
   const sesionActual = () => { const k = localStorage.getItem(CLAVE_SES); return k ? USUARIOS[k] : null; };
   const uuid = () => crypto.randomUUID();
@@ -42,6 +42,7 @@ var supabase = (function () {
     eq(c, v) { this.fil.push((r) => r[c] === v); return this; }
     lte(c, v) { this.fil.push((r) => r[c] <= v); return this; }
     gte(c, v) { this.fil.push((r) => r[c] >= v); return this; }
+    is(c, v) { this.fil.push((r) => (r[c] ?? null) === v); return this; }
     in(c, vs) { this.fil.push((r) => vs.includes(r[c])); return this; }
     or(txt) { const cs = txt.split(',').map(condicion); this.fil.push((r) => cs.some((f) => f(r))); return this; }
     order(c) { this.ord = c; return this; }
@@ -52,7 +53,7 @@ var supabase = (function () {
       const tabla = db[this.t];
       const dev = (filas) => {
         let f = filas.map((x) => JSON.parse(JSON.stringify(x)));
-        if (this.ord) f.sort((a, b) => String(a[this.ord]).localeCompare(String(b[this.ord])));
+        if (this.ord) f.sort((a, b) => (typeof a[this.ord] === 'number' ? a[this.ord] - b[this.ord] : String(a[this.ord]).localeCompare(String(b[this.ord]))));
         if (this.sing) return f.length === 1 ? { data: f[0], error: null } : err('JSON object requested, multiple (or no) rows returned');
         return { data: f, error: null };
       };
@@ -61,7 +62,8 @@ var supabase = (function () {
         const nuevas = [];
         for (const p of this.p) {
           const fila = { id: uuid(), creado: new Date().toISOString(), creada: new Date().toISOString(), ...p };
-          if (this.t === 'eventos') { fila.excepciones = fila.excepciones || []; fila.hora_inicio = hora(fila.hora_inicio ?? null); fila.hora_fin = hora(fila.hora_fin ?? null); }
+          if (this.t === 'lineas') { fila.hecha = fila.hecha ?? false; fila.evento_id = fila.evento_id ?? null; fila.orden = fila.orden ?? Date.now(); }
+          if (this.t === 'eventos') { fila.excepciones = fila.excepciones || []; fila.hechas = fila.hechas || []; fila.hora_inicio = hora(fila.hora_inicio ?? null); fila.hora_fin = hora(fila.hora_fin ?? null); }
           if (this.t === 'menu') fila.hora = hora(fila.hora ?? null);
           let dup = null;
           if (this.t === 'invitaciones') dup = tabla.find((r) => r.espacio_id === fila.espacio_id && r.email === fila.email);
@@ -83,6 +85,7 @@ var supabase = (function () {
       if (this.op === 'delete') {
         const quitar = tabla.filter((r) => this.fil.every((f) => f(r)));
         db[this.t] = tabla.filter((r) => !quitar.includes(r));
+        if (this.t === 'eventos') db.lineas = db.lineas.filter((l) => !quitar.some((e) => e.id === l.evento_id));
         guardar(db);
         return this.retorna ? dev(quitar) : { data: null, error: null };
       }
@@ -173,7 +176,7 @@ var supabase = (function () {
       const e = db.espacios.find((x) => x.id === p_espacio && x.creado_por === u.id);
       if (!e) return err('Solo quien creó el calendario puede borrarlo.');
       db.espacios = db.espacios.filter((x) => x.id !== p_espacio);
-      for (const t of ['miembros', 'invitaciones', 'eventos', 'menu']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
+      for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
       guardar(db); return { data: null, error: null };
     },
     cambiar_mi_color({ p_espacio, p_color }) {
@@ -239,6 +242,7 @@ var supabase = (function () {
     if (creador === quien) return err('No se puede quitar a quien creó el calendario.');
     if (!db.miembros.some((m) => m.espacio_id === esp && m.user_id === quien)) return err('Esa persona no está en el calendario.');
     db.eventos.forEach((e) => { if (e.espacio_id === esp && e.owner_id === quien && e.compartido) e.owner_id = creador; });
+    db.lineas = db.lineas.filter((l) => !db.eventos.some((e) => e.id === l.evento_id && e.espacio_id === esp && e.owner_id === quien && !e.compartido));
     db.eventos = db.eventos.filter((e) => !(e.espacio_id === esp && e.owner_id === quien));
     db.menu = db.menu.filter((f) => !(f.espacio_id === esp && f.owner_id === quien));
     db.miembros = db.miembros.filter((m) => !(m.espacio_id === esp && m.user_id === quien));

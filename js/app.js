@@ -84,6 +84,7 @@ const S = {
   diaSel: hoyInicial, mes: { y: Number(hoyInicial.slice(0, 4)), m: Number(hoyInicial.slice(5, 7)) },
   semana: inicioSemana(hoyInicial),
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
+  compra: null, compraEsp: null, // lista de la compra del calendario abierto (null = sin cargar)
   version: '…', instalar: null,
 };
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
@@ -121,6 +122,7 @@ function rangoVista() {
 
 async function cargarVista(forzar = false) {
   if (S.tab === 'mas') return render();
+  if (S.tab === 'compra') return cargarCompra();
   const { desde, hasta } = rangoVista();
   const r = S.rango;
   if (!forzar && r && r.desde <= desde && r.hasta >= hasta && Date.now() - r.t < 60000) return render();
@@ -129,6 +131,11 @@ async function cargarVista(forzar = false) {
   render();
   try {
     const datos = await D.cargarRango(S.espacio.id, desde, hasta);
+    // pasos de las tareas (si algo falla, el calendario se ve igual, solo sin los pasos)
+    const idsTareas = datos.eventos.filter((e) => e.tipo === 'tarea' && !e.repeticion).map((e) => e.id);
+    let pasos = [];
+    if (idsTareas.length) { try { pasos = await D.cargarPasos(idsTareas); } catch { pasos = []; } }
+    for (const e of datos.eventos) e.pasos = pasos.filter((x) => x.evento_id === e.id);
     if (mio !== token) return;
     S.eventos = datos.eventos;
     S.menu = datos.menu;
@@ -143,14 +150,35 @@ async function cargarVista(forzar = false) {
   render();
 }
 
+// Lista de la compra del calendario abierto. Se pinta entera la primera vez y después solo la lista (para no perder lo que estás escribiendo).
+let pintarCompra = null;
+async function cargarCompra() {
+  const mio = ++token;
+  const primera = S.compra === null || S.compraEsp !== S.espacio.id;
+  if (primera) { S.compra = null; S.cargandoDatos = true; }
+  render();
+  try {
+    const filas = await D.cargarCompra(S.espacio.id);
+    if (mio !== token) return;
+    S.compra = filas; S.compraEsp = S.espacio.id;
+  } catch (e) {
+    if (mio !== token) return;
+    if (primera) { S.compra = []; S.compraEsp = S.espacio.id; }
+    aviso(e.message || String(e), true);
+  }
+  S.cargandoDatos = false;
+  if (S.tab === 'compra' && pintarCompra && document.getElementById('lista-compra')) pintarCompra();
+  else render();
+}
+
 // Deja listo el calendario "esp": personas, invitaciones enviadas y qué capas se ven (se recuerda por calendario).
 async function prepararEspacio(esp) {
   if (!esp) {
-    Object.assign(S, { espacio: null, relacion: null, miembros: [], enviadas: [], capas: new Set(), eventos: [], menu: [], menuMap: new Map(), rango: null });
+    Object.assign(S, { espacio: null, relacion: null, miembros: [], enviadas: [], capas: new Set(), eventos: [], menu: [], menuMap: new Map(), rango: null, compra: null, compraEsp: null });
     return;
   }
   const d = await D.cargarEspacio(S.user, esp);
-  Object.assign(S, { espacio: esp, relacion: esp.relacion, miembros: d.miembros, enviadas: d.enviadas, eventos: [], menu: [], menuMap: new Map(), rango: null });
+  Object.assign(S, { espacio: esp, relacion: esp.relacion, miembros: d.miembros, enviadas: d.enviadas, eventos: [], menu: [], menuMap: new Map(), rango: null, compra: null, compraEsp: null });
   guardarLocal('espacio_actual', esp.id);
   const guardadas = leerLocal(`capas_${esp.id}`, null);
   const ids = new Set(S.miembros.map((m) => m.id));
@@ -317,10 +345,10 @@ function abrirNuevoCalendario() {
   setTimeout(() => nombreIn.focus(), 50);
 }
 
-const TABS = [['inicio', '🏠', 'Inicio'], ['calendario', '🗓️', 'Calendario'], ['menu', '🍽️', 'Menú'], ['mas', '⚙️', 'Más']];
+const TABS = [['inicio', '🏠', 'Inicio'], ['calendario', '🗓️', 'Calendario'], ['menu', '🍽️', 'Menú'], ['compra', '🛒', 'Compra'], ['mas', '⚙️', 'Más']];
 
 function marco() {
-  const titulo = { inicio: 'Organizapp', calendario: 'Calendario', menu: 'Menú', mas: 'Más' }[S.tab];
+  const titulo = { inicio: 'Organizapp', calendario: 'Calendario', menu: 'Menú', compra: 'Compra', mas: 'Más' }[S.tab];
   const fechaFab = S.tab === 'calendario' ? S.diaSel : (S.inicioDia === 'hoy' ? hoyISO() : sumarDias(hoyISO(), 1));
   return el('div', { class: 'marco' },
     el('header', { class: 'cab' },
@@ -329,7 +357,7 @@ function marco() {
         el('h1', {}, titulo),
         el('span', { class: 'version', title: 'Versión de la app' }, `v${S.version}`)),
       selectorCalendario(),
-      S.tab === 'mas' ? null : capasChips()),
+      S.tab === 'mas' || S.tab === 'compra' ? null : capasChips()),
     el('main', { id: 'contenido', class: 'contenido' }, S.cargandoDatos ? el('p', { class: 'vacio' }, 'Cargando…') : vistaActual()),
     el('nav', { class: 'tabs', 'aria-label': 'Secciones' },
       TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; if (id === 'mas') recargarAmistades(); cargarVista(); } },
@@ -342,20 +370,63 @@ function vistaActual() {
   if (S.tab === 'inicio') return vistaInicio();
   if (S.tab === 'calendario') return vistaCalendario();
   if (S.tab === 'menu') return vistaMenu();
+  if (S.tab === 'compra') return vistaCompra();
   return vistaMas();
 }
 
 // ---------- piezas comunes ----------
+// ¿Está hecha esta tarea ese día? (una tarea que se repite se marca día a día)
+const esHecha = (ev, fecha) => ev.tipo === 'tarea' && (ev.hechas || []).includes(ev.repeticion ? (fecha || ev.fecha) : ev.fecha);
+
+async function marcarHecha(ev, fecha, valor) {
+  const dia = ev.repeticion ? (fecha || ev.fecha) : ev.fecha;
+  const antes = ev.hechas || [];
+  const nuevas = valor ? [...new Set([...antes, dia])].sort() : antes.filter((d) => d !== dia);
+  ev.hechas = nuevas; render();
+  try { await D.guardarEvento(ev.id, { hechas: nuevas }); } catch (e) { ev.hechas = antes; render(); aviso(e.message || String(e), true); }
+}
+
+// Marca un paso de una tarea. Si con él quedan todos hechos, la tarea se marca sola; si se desmarca uno de una tarea que estaba completa, se desmarca.
+async function marcarPaso(ev, paso, valor) {
+  const antes = paso.hecha, todosAntes = ev.pasos.every((x) => x.hecha), estabaHecha = esHecha(ev, ev.fecha);
+  paso.hecha = valor; render();
+  try {
+    await D.guardarLinea(paso.id, { hecha: valor });
+    const todos = ev.pasos.every((x) => x.hecha);
+    if (todos && !estabaHecha) await marcarHecha(ev, ev.fecha, true);
+    else if (!todos && todosAntes && estabaHecha) await marcarHecha(ev, ev.fecha, false);
+  } catch (e) { paso.hecha = antes; render(); aviso(e.message || String(e), true); }
+}
+
 function filaEvento({ ev, fecha }, compacta = false) {
   const m = ev.compartido ? { nombre: etiquetaTodos(), color: COLOR_AMBOS } : (miembro(ev.owner_id) || { nombre: '?', color: '#888888' });
   const t = TIPOS.find((x) => x.id === ev.tipo);
   const hora = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : 'Todo el día';
-  return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
+  const hecha = esHecha(ev, fecha);
+  const pasos = !ev.repeticion && ev.pasos && ev.pasos.length ? ev.pasos : null;
+  return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}${hecha ? ' hecha' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
     el('span', { class: 'hora' }, hora),
     el('span', { class: 'cuerpo' },
-      el('span', { class: 'tit' }, `${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: 'Se repite cada semana' }, ' ↻') : null),
+      el('span', { class: 'tit' }, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: 'Se repite cada semana' }, ' ↻') : null,
+        pasos ? el('span', { class: 'progreso' }, ` ${pasos.filter((x) => x.hecha).length}/${pasos.length}`) : null),
       ev.notas ? el('span', { class: 'notas' }, ev.notas) : null),
     S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
+}
+
+// Para las listas: lo mismo que filaEvento, pero las tareas llevan su casilla ✓ y sus pasos (con casilla) debajo.
+function bloqueEvento(x, compacta = false) {
+  const { ev, fecha } = x;
+  if (ev.tipo !== 'tarea') return filaEvento(x, compacta);
+  const puede = puedeEditarCapa(ev.owner_id);
+  const hecha = esHecha(ev, fecha);
+  const chk = el('input', { type: 'checkbox', checked: hecha, disabled: !puede, 'aria-label': `Hecha: ${ev.titulo}`, onchange: () => marcarHecha(ev, fecha, chk.checked) });
+  const pasos = !ev.repeticion && ev.pasos && ev.pasos.length ? ev.pasos : null;
+  return el('div', { class: `evento-bloque${hecha ? ' hecha' : ''}` },
+    el('div', { class: 'evento-fila' }, el('label', { class: 'hecho-chk', title: puede ? 'Marcar como hecha' : 'Solo quien puede editarla la marca' }, chk), filaEvento(x, compacta)),
+    pasos ? el('ul', { class: 'pasos' }, pasos.map((s) => {
+      const c = el('input', { type: 'checkbox', checked: s.hecha, disabled: !puede, onchange: () => marcarPaso(ev, s, c.checked) });
+      return el('li', {}, el('label', { class: `paso${s.hecha ? ' hecho' : ''}` }, c, el('span', {}, s.texto)));
+    })) : null);
 }
 
 // Lista de eventos de un día. Dos formas:
@@ -378,10 +449,10 @@ function rejillaPorHoras(items, cols) { // para eventos sin hora o tareas: una f
     const comunes = delTramo.filter((x) => x.ev.compartido);
     const sueltos = delTramo.filter((x) => !x.ev.compartido);
     return el('div', { class: 'cols-tramo' },
-      comunes.map((x) => filaEvento(x, true)),
+      comunes.map((x) => bloqueEvento(x, true)),
       sueltos.length
         ? el('div', { class: 'cols-fila' }, cols.map((m) => el('div', { class: 'cols-celda' },
-          sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => filaEvento(x, true)))))
+          sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => bloqueEvento(x, true)))))
         : null);
   });
 }
@@ -598,7 +669,7 @@ function lineaDeTiempo(conHora, cols) {
 function agendaEventos(lista, vacio, proporcional = true) {
   if (!lista.length) return el('p', { class: 'vacio' }, vacio);
   const cols = visiblesCapas();
-  if (S.vista !== 'columnas' || cols.length < 2 || cols.length > 3) return lista.map((x) => filaEvento(x));
+  if (S.vista !== 'columnas' || cols.length < 2 || cols.length > 3) return lista.map((x) => bloqueEvento(x));
   const cab = el('div', { class: 'cols-fila cols-cab' }, cols.map((m) => el('span', { class: 'cols-nombre', style: { '--c': m.color } }, el('span', { class: 'punto' }), m.nombre)));
   if (!proporcional) return el('div', { class: 'agenda-cols', style: { '--n': cols.length } }, cab, rejillaPorHoras(lista, cols));
   const sinHora = lista.filter((x) => !x.ev.hora_inicio), conHora = lista.filter((x) => x.ev.hora_inicio);
@@ -717,7 +788,7 @@ function vistaSemana() {
         el('button', { type: 'button', class: 'dia-sem-cab', 'aria-label': `Elegir ${fechaLarga(dia)}`, onclick: () => { S.diaSel = dia; render(); } },
           el('span', { class: 'dia-sem-nombre' }, `${cap(nombreDiaCorto(diaSemana(dia)))} ${Number(dia.slice(8))}`),
           el('span', { class: 'suave' }, lista.length ? `${lista.length} ${lista.length === 1 ? 'evento' : 'eventos'}` : 'Libre')),
-        lista.map((x) => filaEvento(x)),
+        lista.map((x) => bloqueEvento(x)),
         resumenMenuDia(dia));
     }));
 }
@@ -807,6 +878,77 @@ function vistaMenu() {
             ]))
           : el('button', { type: 'button', class: 'vacio-menu', onclick: () => abrirEditorMenu({ fecha: dia, ownerId: primeraEditable.id }) }, 'Sin menú · toca para añadir'));
     }));
+}
+
+// ---------- vista: Compra ----------
+// Una lista por calendario, siempre abierta: se apunta lo que falta y se marca cada cosa al meterla al carro.
+function vistaCompra() {
+  const campo = el('input', { type: 'text', id: 'compra-nuevo', maxLength: 200, autocomplete: 'off', enterKeyHint: 'done',
+    placeholder: 'Añadir… (varios, con comas)', 'aria-label': 'Añadir a la lista de la compra',
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); anadir(); } } });
+  const lista = el('div', { id: 'lista-compra', 'aria-live': 'polite' });
+  const resumen = el('p', { class: 'suave compra-resumen' });
+  const porOrden = (a, b) => (a.orden - b.orden) || String(a.id).localeCompare(String(b.id));
+
+  function fila(l) {
+    const chk = el('input', { type: 'checkbox', checked: l.hecha, disabled: !!l.pendiente, onchange: () => marcar(l, chk.checked) });
+    return el('div', { class: `compra-fila${l.hecha ? ' hecha' : ''}` },
+      el('label', { class: 'compra-chk' }, chk, el('span', {}, l.texto)),
+      el('button', { type: 'button', class: 'icono quitar', disabled: !!l.pendiente, 'aria-label': `Quitar «${l.texto}»`, onclick: () => quitar(l) }, '✕'));
+  }
+  function pintar() {
+    const todas = (S.compra || []).slice().sort(porOrden);
+    const faltan = todas.filter((l) => !l.hecha), carro = todas.filter((l) => l.hecha);
+    resumen.textContent = todas.length ? `${faltan.length} por comprar${carro.length ? ` · ${carro.length} en el carro` : ''}` : '';
+    lista.replaceChildren(...[
+      !todas.length ? el('p', { class: 'vacio' }, 'La lista está vacía. Apunta lo que falte y marca cada cosa al meterla al carro.') : null,
+      faltan.map(fila),
+      carro.length ? el('h3', { class: 'compra-sep' }, `En el carro (${carro.length})`) : null,
+      carro.map(fila),
+      carro.length ? el('button', { type: 'button', class: 'peligro', onclick: () => quitarMarcadas() }, `Quitar las marcadas (${carro.length})`) : null,
+    ].flat().filter(Boolean));
+  }
+  async function anadir() {
+    const textos = campo.value.split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean).map((x) => x.slice(0, 200));
+    if (!textos.length) return;
+    if ((S.compra || []).length + textos.length > 300) return aviso('La lista admite como máximo 300 líneas.', true);
+    const base = Date.now();
+    const temporales = textos.map((t, i) => ({ id: `tmp-${base}-${i}`, texto: t, hecha: false, orden: base + i, pendiente: true }));
+    S.compra = [...(S.compra || []), ...temporales]; campo.value = ''; pintar(); campo.focus();
+    try {
+      const filas = await D.crearLineas(temporales.map((t) => ({ espacio_id: S.espacio.id, evento_id: null, texto: t.texto, orden: t.orden, creado_por: S.user.id })));
+      S.compra = S.compra.filter((l) => !temporales.includes(l)).concat(filas);
+    } catch (e) {
+      S.compra = S.compra.filter((l) => !temporales.includes(l));
+      campo.value = textos.join(', ');
+      aviso(e.message || String(e), true);
+    }
+    pintar();
+  }
+  async function marcar(l, valor) {
+    const antes = l.hecha; l.hecha = valor; pintar();
+    try { await D.guardarLinea(l.id, { hecha: valor }); } catch (e) { l.hecha = antes; pintar(); aviso(e.message || String(e), true); }
+  }
+  async function quitar(l) {
+    const copia = S.compra; S.compra = S.compra.filter((x) => x !== l); pintar();
+    try { await D.borrarLinea(l.id); } catch (e) { S.compra = copia; pintar(); aviso(e.message || String(e), true); }
+  }
+  async function quitarMarcadas() {
+    const n = S.compra.filter((l) => l.hecha).length;
+    if (!n || !confirm(`¿Quitar ${n === 1 ? 'la línea marcada' : `las ${n} líneas marcadas`} de la lista?`)) return;
+    const copia = S.compra; S.compra = S.compra.filter((l) => !l.hecha); pintar();
+    try { await D.quitarMarcadasCompra(S.espacio.id); } catch (e) { S.compra = copia; pintar(); aviso(e.message || String(e), true); }
+  }
+
+  pintarCompra = pintar;
+  pintar();
+  return el('div', { class: 'compra' },
+    el('div', { class: 'barra-nav' },
+      el('h2', {}, 'Lista de la compra'),
+      el('button', { type: 'button', class: 'pequeno', onclick: () => cargarVista(true) }, '↻ Actualizar')),
+    S.miembros.length > 1 ? el('p', { class: 'suave' }, `La ven y la editan todas las personas de «${S.espacio.nombre}».`) : el('p', { class: 'suave' }, `Solo la ves tú, en «${S.espacio.nombre}».`),
+    el('div', { class: 'compra-nuevo' }, campo, el('button', { type: 'button', class: 'primario', onclick: () => anadir() }, 'Añadir')),
+    resumen, lista);
 }
 
 // ---------- vista: Más ----------
@@ -1090,18 +1232,70 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
 
   const tipoBtns = TIPOS.map((t) => el('button', {
     type: 'button', class: 'tipo-btn', 'aria-pressed': String(t.id === tipo), disabled: !editable,
-    onclick: () => { tipo = t.id; tipoBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(TIPOS[i].id === tipo))); },
+    onclick: () => { tipo = t.id; tipoBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(TIPOS[i].id === tipo))); actualizarSecciones(); },
   }, el('span', { class: 'ico' }, t.icono), t.nombre));
 
   const titulo = el('input', { type: 'text', maxLength: 120, placeholder: 'Ej.: Pilates, Cine, Hacer la crema', value: ev?.titulo || '', disabled: !editable, 'aria-label': 'Título' });
   const fechaIn = el('input', { type: 'date', value: ev ? ev.fecha : (fecha || hoyISO()), disabled: !editable, 'aria-label': 'Fecha' });
   const iniIn = el('input', { type: 'time', value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
   const finIn = el('input', { type: 'time', value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
-  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; } },
+  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; actualizarSecciones(); } },
     [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || '') === v }, n)));
   const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
   const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
   const notasIn = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Notas (opcional)', disabled: !editable, 'aria-label': 'Notas', value: ev?.notas || '' });
+
+
+  // Tarea hecha (solo al editar) y pasos de la tarea (solo tareas que no se repiten).
+  const diaHecha = ev ? (ev.repeticion ? (ocurrencia || ev.fecha) : ev.fecha) : null;
+  const hechaIn = el('input', { type: 'checkbox', checked: ev ? (ev.hechas || []).includes(diaHecha) : false, disabled: !editable });
+  const hechaUI = !nuevo ? el('label', { class: 'check-fila' }, hechaIn, el('span', {}, ev?.repeticion ? 'Hecha este día' : 'Hecha')) : null;
+  const pasosEd = nuevo ? [] : (ev.pasos || []).slice();
+  let huboCambioPasos = false;
+  const pasosLista = el('ul', { class: 'pasos pasos-ed' });
+  const pasoIn = el('input', { type: 'text', maxLength: 200, placeholder: 'Añadir un paso… (separa con comas para varios)', 'aria-label': 'Añadir un paso', disabled: !editable, autocomplete: 'off', enterKeyHint: 'done',
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); anadirPaso(); } } });
+  function pintarPasos() {
+    pasosLista.replaceChildren(...pasosEd.map((s) => {
+      const c = el('input', { type: 'checkbox', checked: s.hecha, disabled: !editable || nuevo, onchange: async () => {
+        if (!s.id) return;
+        await marcarPaso(ev, s, c.checked);
+        huboCambioPasos = true; hechaIn.checked = (ev.hechas || []).includes(diaHecha); pintarPasos();
+      } });
+      return el('li', { class: 'paso-fila' },
+        el('label', { class: `paso${s.hecha ? ' hecho' : ''}` }, c, el('span', {}, s.texto)),
+        editable ? el('button', { type: 'button', class: 'icono quitar', 'aria-label': `Quitar el paso «${s.texto}»`, onclick: async (e) => {
+          if (!s.id) { pasosEd.splice(pasosEd.indexOf(s), 1); return pintarPasos(); }
+          await conCarga(e.currentTarget, async () => {
+            await D.borrarLinea(s.id);
+            pasosEd.splice(pasosEd.indexOf(s), 1); ev.pasos = pasosEd; huboCambioPasos = true;
+          });
+          pintarPasos();
+        } }, '✕') : null);
+    }));
+  }
+  async function anadirPaso() {
+    const trozos = pasoIn.value.split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean).map((x) => x.slice(0, 200));
+    if (!trozos.length) return;
+    if (pasosEd.length + trozos.length > 100) return aviso('Una tarea admite como máximo 100 pasos.', true);
+    if (nuevo) { trozos.forEach((x) => pasosEd.push({ texto: x, hecha: false })); pasoIn.value = ''; pintarPasos(); return; }
+    const base = Date.now();
+    await conCarga(pasoIn, async () => {
+      const filas = await D.crearLineas(trozos.map((x, i) => ({ espacio_id: ev.espacio_id, evento_id: ev.id, texto: x, orden: base + i, creado_por: S.user.id })));
+      pasosEd.push(...filas); ev.pasos = pasosEd; huboCambioPasos = true; pasoIn.value = '';
+      if (esHecha(ev, ev.fecha) && !ev.repeticion) { /* se queda como estaba: la marca quien quiera */ }
+    });
+    pintarPasos(); pasoIn.focus();
+  }
+  const pasosUI = el('div', { class: 'bloque pasos-bloque' },
+    el('span', { class: 'etq' }, 'Pasos (se marcan al hacerlos)'),
+    pasosLista,
+    editable ? el('div', { class: 'fila-paso-nuevo' }, pasoIn, el('button', { type: 'button', onclick: () => anadirPaso() }, 'Añadir')) : null);
+  function actualizarSecciones() {
+    pasosUI.hidden = !(tipo === 'tarea' && repSel.value === '');
+    if (hechaUI) hechaUI.hidden = tipo !== 'tarea';
+  }
+  pintarPasos();
 
   // Al crear: copiar también a otros calendarios tuyos (como evento tuyo), para no apuntarlo dos veces.
   const otrosCals = nuevo ? S.espacios.filter((e) => e.id !== S.espacio.id) : [];
@@ -1130,6 +1324,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     if (hf && !hi) return aviso('Si pones hora de fin, pon también la de inicio.', true);
     if (hi && hf && hf < hi) return aviso('La hora de fin es anterior a la de inicio.', true);
     if (rep && hasta && hasta < f) return aviso('«Repetir hasta» es anterior a la fecha.', true);
+    if ((tipo !== 'tarea' || rep) && pasosEd.length) return aviso('Esta tarea tiene pasos: quítalos, o déjala como tarea que no se repite.', true);
     const campos = {
       tipo, titulo: t, fecha: f, hora_inicio: hi || null, hora_fin: hf || null,
       notas: notasIn.value.trim() || null, repeticion: rep || null, repite_hasta: rep && hasta ? hasta : null,
@@ -1137,12 +1332,28 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     };
     const owner = para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para;
     const destinos = otrosCals.filter((_, i) => copiasChk[i].checked);
+    if (!nuevo) {
+      // solo se escribe «hechas» si ha cambiado (así guardar un evento nunca depende de esa columna)
+      const antes = ev.hechas || [];
+      let despues = antes;
+      if (tipo !== 'tarea') despues = [];
+      else if (rep) despues = hechaIn.checked ? [...new Set([...antes, diaHecha])].sort() : antes.filter((d) => d !== diaHecha);
+      else despues = hechaIn.checked ? [f] : [];
+      if (JSON.stringify(despues) !== JSON.stringify(antes)) campos.hechas = despues;
+    }
+    const idNuevo = nuevo && pasosEd.length ? crypto.randomUUID() : null;
     return conCarga(btn, async () => {
       if (nuevo) {
         await D.crearEventos([
-          { ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id },
+          { ...(idNuevo ? { id: idNuevo } : {}), ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id },
           ...destinos.map((e) => filaCopia({ ...campos, excepciones: [] }, e.id)),
         ]);
+        if (idNuevo) {
+          const base = Date.now();
+          try {
+            await D.crearLineas(pasosEd.map((s, i) => ({ espacio_id: S.espacio.id, evento_id: idNuevo, texto: s.texto, orden: base + i, creado_por: S.user.id })));
+          } catch (e) { aviso('Se guardó la tarea, pero no los pasos: ' + (e.message || e), true); cerrar(); await cargarVista(true); return; }
+        }
       } else await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
       cerrar();
       aviso(destinos.length ? `Guardado y copiado a ${destinos.map((e) => e.nombre).join(', ')}` : 'Guardado');
@@ -1167,11 +1378,14 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     hastaWrap,
     ev?.repeticion && editable ? el('p', { class: 'suave' }, 'Los cambios se aplican a toda la serie. Para quitar solo un día, usa «Borrar».') : null,
     notasIn,
+    hechaUI,
+    pasosUI,
     copiasUI,
     editable ? el('div', { class: 'fila-botones fin' },
       !nuevo ? el('button', { type: 'button', class: 'peligro', onclick: (e) => borrar(e.currentTarget) }, 'Borrar') : null,
       el('button', { type: 'button', class: 'primario', onclick: (e) => guardar(e.currentTarget) }, 'Guardar')) : null);
-  const cerrar = modal(nuevo ? 'Nuevo evento' : (editable ? 'Editar evento' : 'Evento'), cuerpo);
+  const cerrar = modal(nuevo ? 'Nuevo evento' : (editable ? 'Editar evento' : 'Evento'), cuerpo, () => { if (huboCambioPasos) { S.rango = null; cargarVista(true); } });
+  actualizarSecciones();
   if (nuevo) setTimeout(() => titulo.focus(), 50);
 }
 
@@ -1441,7 +1655,7 @@ function zonaPlanSemanal(plan, cerrar) {
     if (c.error) { resumen.textContent = ''; return; }
     const fechas = c.filas.map((f) => f.fecha).sort();
     resumen.textContent = `Se importarán ${c.filas.length} comidas, del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}.`
-      + (tareasChk.checked ? ` Se crearán ${c.tareas.length} tareas de preparación, una por día, la tarde anterior${c.omitidas ? ` (${c.omitidas} se omiten por ser de días pasados)` : ''}.` : '');
+      + (tareasChk.checked ? ` Se crearán ${c.tareas.length} tareas de preparación, una por día, la tarde anterior y con cada plato como paso${c.omitidas ? ` (${c.omitidas} se omiten por ser de días pasados)` : ''}.` : '');
   }
 
   botonImportar.onclick = () => conCarga(botonImportar, async () => {
@@ -1455,11 +1669,16 @@ function zonaPlanSemanal(plan, cerrar) {
       const { eventos } = await D.cargarRango(S.espacio.id, desde, hasta);
       for (const ev of eventos.filter((e) => e.tipo === 'tarea' && e.compartido && !e.repeticion && String(e.titulo).startsWith(PREFIJO_PREPARAR) && puedeEditarCapa(e.owner_id))) await D.borrarEvento(ev.id);
       if (c.tareas.length) {
-        await D.crearEventos(c.tareas.map((t) => ({
-          espacio_id: S.espacio.id, owner_id: S.user.id, creado_por: S.user.id, compartido: true, tipo: 'tarea', titulo: t.titulo,
-          fecha: t.fecha, hora_inicio: t.hora, hora_fin: null, notas: t.notas, repeticion: null, repite_hasta: null, excepciones: [],
-        })));
+        const filasT = c.tareas.map((t) => ({
+          id: crypto.randomUUID(), espacio_id: S.espacio.id, owner_id: S.user.id, creado_por: S.user.id, compartido: true, tipo: 'tarea', titulo: t.titulo,
+          fecha: t.fecha, hora_inicio: t.hora, hora_fin: null, notas: null, repeticion: null, repite_hasta: null, excepciones: [],
+        }));
+        await D.crearEventos(filasT);
         nTareas = c.tareas.length;
+        const base = Date.now();
+        await D.crearLineas(c.tareas.flatMap((t, i) => t.lineas.map((texto, j) => ({
+          espacio_id: S.espacio.id, evento_id: filasT[i].id, texto, orden: base + j, creado_por: S.user.id,
+        }))));
       }
     }
     cerrar();
