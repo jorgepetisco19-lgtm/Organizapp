@@ -120,7 +120,7 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .fila-evento .hora { color: var(--suave); font-size: .9rem; padding-top: 1px; font-variant-numeric: tabular-nums; }
 .fila-evento .cuerpo { display: grid; gap: 2px; min-width: 0; }
 .fila-evento .tit { font-weight: 600; overflow-wrap: anywhere; }
-.fila-evento .notas { color: var(--suave); font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fila-evento .notas { color: var(--suave); font-size: .88rem; white-space: pre-line; overflow-wrap: anywhere; }
 .fila-evento .quien { font-size: .8rem; color: var(--suave); }
 .fila-evento .rep { color: var(--suave); }
 
@@ -153,8 +153,8 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .celda { border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 12%, var(--superficie)); border-radius: 6px; padding: 5px 6px; font-size: .88rem; min-height: 34px; cursor: pointer; overflow: hidden; }
 .celda.vacia { background: none; border-left-color: var(--borde); color: var(--suave); }
 .celda .h { color: var(--suave); font-size: .78rem; margin-right: 4px; }
-.celda .t { overflow-wrap: anywhere; }
-.celda .masl { color: var(--suave); font-size: .8rem; }
+.celda .t { display: block; overflow-wrap: anywhere; }
+.celda .t + .t { margin-top: 2px; }
 .vacio-menu { width: 100%; text-align: left; border-style: dashed; color: var(--suave); }
 
 /* más */
@@ -232,8 +232,9 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .dia-sem-nombre { font-weight: 700; }
 .dia-sem .fila-evento { background: var(--fondo); }
 .menu-dia-sem { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; font-size: .85rem; }
-.menu-resumen { display: flex; gap: 6px; align-items: center; color: var(--suave); }
-.menu-resumen .punto { width: 8px; height: 8px; }
+.menu-resumen { display: flex; gap: 6px; align-items: flex-start; color: var(--suave); margin-bottom: 4px; }
+.menu-resumen .menu-txt { white-space: pre-line; overflow-wrap: anywhere; }
+.menu-resumen .punto { width: 8px; height: 8px; flex: none; margin-top: .4em; }
 
 .tl.expandido .tl-ev { top: var(--te); }
 .col-guia { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--c) 7%, transparent); border-radius: 8px; pointer-events: none; }

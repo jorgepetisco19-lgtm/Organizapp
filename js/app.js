@@ -4,7 +4,7 @@ import * as D from './datos.js';
 import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
-  repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu, primeraLinea,
+  repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -685,11 +685,12 @@ function vistaCalendario() {
     S.calVista === 'semana' ? vistaSemana() : vistaMes());
 }
 
-// Resumen del menú de un día: una línea por persona con su comida y su cena.
+// Resumen del menú de un día: por persona, su comida y su cena completas (una línea por franja, platos separados por «·»).
 function resumenMenuDia(dia) {
   const filas = visiblesCapas().map((m) => {
-    const partes = ['comida', 'cena'].map((f) => S.menuMap.get(claveMenu(dia, m.id, f))).filter(Boolean).map((r) => primeraLinea(r.texto));
-    return partes.length ? el('div', { class: 'menu-resumen', style: { '--c': m.color } }, el('span', { class: 'punto' }), partes.join(' · ')) : null;
+    const partes = ['comida', 'cena'].map((f) => S.menuMap.get(claveMenu(dia, m.id, f))).filter(Boolean)
+      .map((r) => r.texto.split('\n').map((s) => s.trim()).filter(Boolean).join(' · '));
+    return partes.length ? el('div', { class: 'menu-resumen', style: { '--c': m.color } }, el('span', { class: 'punto' }), el('span', { class: 'menu-txt' }, partes.join('\n'))) : null;
   }).filter(Boolean);
   return filas.length ? el('div', { class: 'menu-dia-sem' }, el('span', { class: 'suave' }, '🍽️'), el('div', {}, filas)) : null;
 }
@@ -799,8 +800,8 @@ function vistaMenu() {
                   onkeydown: (e) => { if (e.key === 'Enter') abrirEditorMenu({ fecha: dia, ownerId: m.id }); },
                 }, r ? [
                   r.hora ? el('span', { class: 'h' }, hhmm(r.hora)) : null,
-                  el('span', { class: 't' }, r.texto.split('\n').map((s) => s.trim()).filter(Boolean)[0] || ''),
-                  r.texto.split('\n').filter((s) => s.trim()).length > 1 ? el('span', { class: 'masl' }, ` +${r.texto.split('\n').filter((s) => s.trim()).length - 1}`) : null,
+                  // se ve el texto entero, una línea por plato (mejor hacer scroll que abrir cada celda)
+                  r.texto.split('\n').map((s) => s.trim()).filter(Boolean).map((l) => el('span', { class: 't' }, l)),
                 ] : '—');
               }),
             ]))

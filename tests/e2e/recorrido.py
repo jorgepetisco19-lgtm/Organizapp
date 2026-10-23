@@ -255,6 +255,7 @@ with sync_playwright() as p:
     comprobar('26' in page.locator('.barra-nav').inner_text(), 'la vista salta a la semana del 26/10: ' + page.locator('.barra-nav').inner_text().replace('\n', ' '))
     comprobar(page.locator('.dia-menu').count() == 7, f'{page.locator(".dia-menu").count()} tarjetas de día')
     page.screenshot(path=f'{CAP}/09-menu-semana.png', full_page=True)
+    comprobar(page.locator('.celda .masl').count() == 0 and page.locator('.celda').filter(has_text='Crema de puerro').first.locator('.t').count() >= 3, 'las celdas del menú muestran todos los platos, no solo el primero')
     comprobar(page.locator('.celda:not(.vacia)').count() > 40, f'celdas con menú: {page.locator(".celda:not(.vacia)").count()}')
 
     print('12) Editar un día del menú')
@@ -265,7 +266,8 @@ with sync_playwright() as p:
     area.fill('Crema de calabaza\nTortilla francesa')
     page.locator('.modal').get_by_role('button', name='Guardar').click()
     page.wait_for_timeout(400)
-    comprobar('+1' in page.locator('.dia-menu').first.inner_text(), 'cena de 2 líneas muestra "+1"')
+    cena1 = page.locator('.dia-menu').first.locator('.franja-etq', has_text='Cena').locator('xpath=following-sibling::div[1]')
+    comprobar(cena1.locator('.t').count() == 2 and 'Tortilla francesa' in cena1.inner_text() and '+1' not in page.locator('.dia-menu').first.inner_text(), 'la cena de 2 líneas se ve entera (sin «+1»)')
 
     print('13) Repetir semanas hasta el 30/11')
     page.get_by_role('button', name=re.compile('Repetir semanas')).click()
@@ -366,6 +368,9 @@ with sync_playwright() as p:
     page.get_by_label('Semana siguiente').click(); page.wait_for_timeout(300)
     comprobar(tarjeta('2026-10-27').locator('.fila-evento', has_text='Dentista').count() == 1, 'semana siguiente: "Dentista" el martes 27')
     comprobar(page.locator('.menu-resumen').count() >= 1, 'se ve un resumen del menú en los días que lo tienen')
+    comprobar(any(' · ' in page.locator('.menu-resumen').nth(i).inner_text() for i in range(page.locator('.menu-resumen').count())), 'el resumen del menú en la semana lleva todos los platos de la comida y la cena')
+    estilo = page.evaluate("() => { const b = document.createElement('button'); b.className = 'fila-evento'; const s = document.createElement('span'); s.className = 'notas'; s.textContent = 'a\\nb'; b.append(s); document.body.append(b); const c = getComputedStyle(s); const r = [c.whiteSpace, c.textOverflow]; b.remove(); return r; }")
+    comprobar(estilo[0] == 'pre-line' and estilo[1] != 'ellipsis', f'las notas de un evento o tarea se ven enteras, con sus saltos de línea: {estilo}')
     page.locator('.dia-sem-cab', has_text='28').click(); page.wait_for_timeout(200)
     page.locator('.fab').click()
     page.locator('.tipo-btn', has_text='Plan').click()
