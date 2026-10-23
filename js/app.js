@@ -4,7 +4,7 @@ import * as D from './datos.js';
 import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
-  repetirSemanas, leerImportacion, diffDias, diaSemana, plantillaMenu,
+  repetirSemanas, leerImportacion, diffDias, diaSemana, plantillaMenu, primeraLinea,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -79,6 +79,7 @@ const S = {
   capas: new Set(), tipos: new Set(leerLocal('tipos', TIPOS.map((t) => t.id))),
   tiposInicio: new Set(leerLocal('tipos_inicio', TIPOS.map((t) => t.id))),
   vista: leerLocal('vista', 'lista'),
+  calVista: leerLocal('cal_vista', 'mes'), semanaCal: inicioSemana(hoyInicial),
   diaSel: hoyInicial, mes: { y: Number(hoyInicial.slice(0, 4)), m: Number(hoyInicial.slice(5, 7)) },
   semana: inicioSemana(hoyInicial),
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
@@ -107,6 +108,7 @@ function aplicarTema() {
 let token = 0;
 
 function rangoVista() {
+  if (S.tab === 'calendario' && S.calVista === 'semana') return { desde: S.semanaCal, hasta: sumarDias(S.semanaCal, 6) };
   if (S.tab === 'calendario') {
     const sem = rejillaMes(S.mes.y, S.mes.m);
     return { desde: sem[0][0], hasta: sem[sem.length - 1][6] };
@@ -345,29 +347,151 @@ function lineaDeTiempo(conHora, cols) {
   tramos.forEach((t, i) => { if (i) y += HUECO_PX; t.y = y; y += (t.b - t.a) * PX_MIN; });
   const alto = y;
   const yDe = (min) => { const t = tramos.find((t) => min >= t.a && min <= t.b); return t.y + (min - t.a) * PX_MIN; };
+  // Geometría "expandida" (sin huecos acortados, de 6:00 a 24:00 como mínimo): se usa mientras se arrastra un evento
+  const E0 = Math.min(360, tramos[0].a), E1 = Math.max(1440, tramos[tramos.length - 1].b);
+  const yExp = (min) => (min - E0) * PX_MIN;
 
   const eje = [], lineas = [];
   tramos.forEach((t, i) => {
     for (let h = t.a; h <= t.b; h += 60) {
       const top = t.y + (h - t.a) * PX_MIN;
-      eje.push(el('span', { class: 'tl-hora', style: { top: `${top}px` } }, `${pad2(Math.floor(h / 60) % 24)}:00`));
-      lineas.push(el('div', { class: 'tl-linea', style: { top: `${top}px` } }));
+      eje.push(el('span', { class: 'tl-hora solo-comp', style: { top: `${top}px` } }, `${pad2(Math.floor(h / 60) % 24)}:00`));
+      lineas.push(el('div', { class: 'tl-linea solo-comp', style: { top: `${top}px` } }));
     }
-    if (i) eje.push(el('span', { class: 'tl-hueco', style: { top: `${tramos[i - 1].y + (tramos[i - 1].b - tramos[i - 1].a) * PX_MIN}px`, height: `${HUECO_PX}px` } }, '⋯'));
+    if (i) eje.push(el('span', { class: 'tl-hueco solo-comp', style: { top: `${tramos[i - 1].y + (tramos[i - 1].b - tramos[i - 1].a) * PX_MIN}px`, height: `${HUECO_PX}px` } }, '⋯'));
   });
+  for (let h = E0; h <= E1; h += 60) {
+    eje.push(el('span', { class: 'tl-hora solo-exp', style: { top: `${yExp(h)}px` } }, `${pad2(Math.floor(h / 60) % 24)}:00`));
+    lineas.push(el('div', { class: 'tl-linea solo-exp', style: { top: `${yExp(h)}px` } }));
+  }
+  const guias = cols.map((m, k) => el('div', { class: 'col-guia', 'data-col': k, style: { left: `${(k * 100) / n}%`, width: `calc(${100 / n}% - 4px)`, '--c': m.color } }));
+
+  // ---- arrastrar para mover (mantener pulsado en el móvil; arrastrar directamente con ratón) ----
+  const fmtMin = (m) => `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
+  function activarArrastre(b, g) {
+    const ev = g.x.ev;
+    if (!puedeEditarCapa(ev.owner_id)) return; // solo quien puede editar ese evento
+    const libreH = !ev.compartido && g.col !== 'todos'; // los de "todos" solo se mueven en el tiempo
+    const origen = typeof g.col === 'number' ? g.col : 0;
+    const permitidas = new Set();
+    cols.forEach((m, k) => { if (libreH ? puedeEditarCapa(m.id) : k === origen) permitidas.add(k); });
+    const durReal = ev.hora_fin ? aMin(hhmm(ev.hora_fin)) - aMin(hhmm(ev.hora_inicio)) : 0;
+    const durVis = g.b - g.a;
+    const st = { id: null, activo: false, timer: 0, x0: 0, y0: 0, cx: 0, cy: 0, tipo: '', min: g.a, col: origen, raf: 0, hubo: false };
+    let tl, cuerpo, baseTop, tlTop, colW, grab, horaEl;
+
+    const empezar = () => {
+      if (st.activo || st.id === null) return;
+      clearTimeout(st.timer);
+      st.activo = true;
+      try { b.setPointerCapture(st.id); } catch { /* sin captura */ }
+      if (navigator.vibrate) navigator.vibrate(15);
+      tl = b.closest('.tl'); cuerpo = tl.querySelector('.tl-cols'); horaEl = b.querySelector('.hora');
+      const antes = b.getBoundingClientRect().top;
+      tl.classList.add('expandido');
+      document.body.classList.add('arrastrando');
+      b.classList.add('arrastrando');
+      window.scrollBy(0, b.getBoundingClientRect().top - antes); // el evento se queda bajo el dedo
+      const rb = b.getBoundingClientRect(), rc = cuerpo.getBoundingClientRect();
+      baseTop = rb.top + window.scrollY; tlTop = rc.top + window.scrollY; colW = rc.width / n;
+      grab = Math.min(Math.max(st.cy - rb.top, 0), rb.height);
+      tl.querySelectorAll('.col-guia').forEach((gd, k) => gd.classList.toggle('no', libreH && !permitidas.has(k)));
+      bucle();
+    };
+
+    const bucle = () => {
+      if (!st.activo) return;
+      const sup = document.querySelector('.cab').getBoundingClientRect().bottom;
+      const inf = document.querySelector('.tabs').getBoundingClientRect().top;
+      if (st.cy < sup + 50) window.scrollBy(0, -Math.min(18, (sup + 50 - st.cy) / 3));
+      else if (st.cy > inf - 50) window.scrollBy(0, Math.min(18, (st.cy - (inf - 50)) / 3));
+      const topDoc = st.cy + window.scrollY - grab;
+      let min = Math.round((E0 + (topDoc - tlTop) / PX_MIN) / 15) * 15;
+      min = Math.max(E0, Math.min(min, Math.min(E1, 1440) - Math.max(durReal, 15)));
+      st.min = min;
+      let k = origen;
+      if (libreH) {
+        const kk = Math.max(0, Math.min(n - 1, Math.floor((st.cx - cuerpo.getBoundingClientRect().left) / colW)));
+        if (permitidas.has(kk)) k = kk;
+        tl.querySelectorAll('.col-guia').forEach((gd, j) => gd.classList.toggle('destino', j === k));
+      }
+      st.col = k;
+      b.style.transform = `translate(${(k - origen) * colW}px, ${tlTop + yExp(min) - baseTop}px)`;
+      if (horaEl) horaEl.textContent = durReal ? `${fmtMin(min)}–${fmtMin(min + durReal)}` : fmtMin(min);
+      st.raf = requestAnimationFrame(bucle);
+    };
+
+    const terminar = (guardar) => {
+      cancelAnimationFrame(st.raf);
+      clearTimeout(st.timer);
+      const eraActivo = st.activo;
+      st.activo = false;
+      const id = st.id; st.id = null;
+      if (!eraActivo) return;
+      try { b.releasePointerCapture(id); } catch { /* ya liberado */ }
+      st.hubo = true; setTimeout(() => { st.hubo = false; }, 400); // el "clic" que sigue al soltar no abre el editor
+      b.style.transform = '';
+      b.classList.remove('arrastrando');
+      document.body.classList.remove('arrastrando');
+      const antes = b.getBoundingClientRect().top;
+      tl.classList.remove('expandido');
+      window.scrollBy(0, b.getBoundingClientRect().top - antes);
+      tl.querySelectorAll('.col-guia').forEach((gd) => gd.classList.remove('destino', 'no'));
+      if (horaEl) horaEl.textContent = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : '';
+      if (!guardar) return;
+      const cambioHora = st.min !== g.a;
+      const nuevoDueno = libreH ? cols[st.col].id : ev.owner_id;
+      const cambioDueno = nuevoDueno !== ev.owner_id;
+      if (!cambioHora && !cambioDueno) return;
+      const campos = {};
+      if (cambioHora) { campos.hora_inicio = fmtMin(st.min); campos.hora_fin = ev.hora_fin ? fmtMin(st.min + durReal) : null; }
+      if (cambioDueno) campos.owner_id = nuevoDueno;
+      if (ev.repeticion) {
+        const semanas = ev.repite_hasta ? Math.floor(diffDias(ev.repite_hasta, ev.fecha) / 7) + 1 : null;
+        const alcance = semanas ? `toda la serie (${semanas} semanas, hasta el ${fechaCorta(ev.repite_hasta)})` : 'toda la serie (todas las semanas)';
+        if (!confirm(`«${ev.titulo}» se repite cada semana: el cambio se aplicará a ${alcance}.\n¿Aplicar?`)) { cargarVista(true); return; }
+      }
+      conCarga(null, async () => {
+        await D.guardarEvento(ev.id, campos);
+        aviso(cambioDueno ? `Pasado a ${cols[st.col].nombre}${cambioHora ? ` a las ${fmtMin(st.min)}` : ''}` : `Movido a las ${fmtMin(st.min)}`);
+        await cargarVista(true);
+      });
+    };
+
+    b.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || st.id !== null) return;
+      st.id = e.pointerId; st.tipo = e.pointerType; st.x0 = st.cx = e.clientX; st.y0 = st.cy = e.clientY;
+      if (e.pointerType !== 'mouse') st.timer = setTimeout(empezar, 450);
+    });
+    b.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== st.id) return;
+      st.cx = e.clientX; st.cy = e.clientY;
+      if (st.activo) return;
+      const d = Math.hypot(e.clientX - st.x0, e.clientY - st.y0);
+      if (st.tipo === 'mouse') { if (d > 5) empezar(); } else if (d > 10) { clearTimeout(st.timer); st.id = null; } // es un desplazamiento normal
+    });
+    b.addEventListener('pointerup', (e) => { if (e.pointerId === st.id) { if (st.activo) terminar(true); else { clearTimeout(st.timer); st.id = null; } } });
+    b.addEventListener('pointercancel', (e) => { if (e.pointerId === st.id) { if (st.activo) terminar(false); else { clearTimeout(st.timer); st.id = null; } } });
+    b.addEventListener('touchmove', (e) => { if (st.activo) e.preventDefault(); }, { passive: false });
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+    b.addEventListener('click', (e) => { if (st.hubo) { e.preventDefault(); e.stopImmediatePropagation(); st.hubo = false; } }, true);
+  }
 
   const eventos = piezas.map((g) => {
     const b = filaEvento(g.x, true);
     b.classList.add('tl-ev');
     const ancho = g.col === 'todos' ? 100 / g.total : 100 / (n * g.total);
     const izq = g.col === 'todos' ? (g.carril * 100) / g.total : ((g.col + g.carril / g.total) * 100) / n;
-    Object.assign(b.style, { top: `${yDe(g.a)}px`, height: `${yDe(g.b) - yDe(g.a) - 2}px`, left: `${izq}%`, width: `calc(${ancho}% - 4px)` });
+    Object.assign(b.style, { height: `${yDe(g.b) - yDe(g.a) - 2}px`, left: `${izq}%`, width: `calc(${ancho}% - 4px)` });
+    b.style.setProperty('--t', `${yDe(g.a)}px`);
+    b.style.setProperty('--te', `${yExp(g.a)}px`);
+    activarArrastre(b, g);
     return b;
   });
 
-  return el('div', { class: 'tl', style: { height: `${alto}px` } },
+  return el('div', { class: 'tl', style: { '--alto': `${alto}px`, '--alto-e': `${(E1 - E0) * PX_MIN}px` } },
     el('div', { class: 'tl-eje' }, eje),
-    el('div', { class: 'tl-cols' }, lineas, eventos));
+    el('div', { class: 'tl-cols' }, guias, lineas, eventos));
 }
 
 function agendaEventos(lista, vacio, proporcional = true) {
@@ -446,6 +570,57 @@ function vistaInicio() {
 
 // ---------- vista: Calendario ----------
 function vistaCalendario() {
+  const cambiar = (v) => {
+    if (S.calVista === v) return;
+    S.calVista = v; guardarLocal('cal_vista', v);
+    if (v === 'semana') S.semanaCal = inicioSemana(S.diaSel);
+    else S.mes = { y: Number(S.diaSel.slice(0, 4)), m: Number(S.diaSel.slice(5, 7)) };
+    cargarVista();
+  };
+  return el('div', {},
+    el('div', { class: 'seg', role: 'group', 'aria-label': 'Ver por' },
+      [['mes', 'Mes'], ['semana', 'Semana']].map(([id, nom]) =>
+        el('button', { type: 'button', 'aria-pressed': String(S.calVista === id), onclick: () => cambiar(id) }, nom))),
+    S.calVista === 'semana' ? vistaSemana() : vistaMes());
+}
+
+// Resumen del menú de un día: una línea por persona con su comida y su cena.
+function resumenMenuDia(dia) {
+  const filas = visiblesCapas().map((m) => {
+    const partes = ['comida', 'cena'].map((f) => S.menuMap.get(claveMenu(dia, m.id, f))).filter(Boolean).map((r) => primeraLinea(r.texto));
+    return partes.length ? el('div', { class: 'menu-resumen', style: { '--c': m.color } }, el('span', { class: 'punto' }), partes.join(' · ')) : null;
+  }).filter(Boolean);
+  return filas.length ? el('div', { class: 'menu-dia-sem' }, el('span', { class: 'suave' }, '🍽️'), el('div', {}, filas)) : null;
+}
+
+function vistaSemana() {
+  const hoy = hoyISO();
+  const dias = Array.from({ length: 7 }, (_, i) => sumarDias(S.semanaCal, i));
+  const mapa = expandirEventos(S.eventos.filter((e) => eventoVisible(e) && S.tipos.has(e.tipo)), dias[0], dias[6]);
+  const irSemana = (n) => {
+    S.semanaCal = sumarDias(S.semanaCal, 7 * n);
+    S.diaSel = (hoy >= S.semanaCal && hoy <= sumarDias(S.semanaCal, 6)) ? hoy : S.semanaCal;
+    cargarVista();
+  };
+  return el('div', {},
+    el('div', { class: 'barra-nav' },
+      el('button', { type: 'button', class: 'icono', 'aria-label': 'Semana anterior', onclick: () => irSemana(-1) }, '‹'),
+      el('h2', {}, `${fechaCorta(dias[0])} – ${fechaCorta(dias[6])}`),
+      el('button', { type: 'button', class: 'icono', 'aria-label': 'Semana siguiente', onclick: () => irSemana(1) }, '›'),
+      el('button', { type: 'button', class: 'pequeno', onclick: () => { S.semanaCal = inicioSemana(hoy); S.diaSel = hoy; cargarVista(); } }, 'Hoy')),
+    chipsTipos(S.tipos, 'tipos'),
+    dias.map((dia) => {
+      const lista = mapa.get(dia) || [];
+      return el('section', { class: `dia-sem${dia === hoy ? ' hoy' : ''}${dia === S.diaSel ? ' sel' : ''}`, 'data-dia': dia },
+        el('button', { type: 'button', class: 'dia-sem-cab', 'aria-label': `Elegir ${fechaLarga(dia)}`, onclick: () => { S.diaSel = dia; render(); } },
+          el('span', { class: 'dia-sem-nombre' }, `${cap(nombreDiaCorto(diaSemana(dia)))} ${Number(dia.slice(8))}`),
+          el('span', { class: 'suave' }, lista.length ? `${lista.length} ${lista.length === 1 ? 'evento' : 'eventos'}` : 'Libre')),
+        lista.map((x) => filaEvento(x)),
+        resumenMenuDia(dia));
+    }));
+}
+
+function vistaMes() {
   const { y, m } = S.mes;
   const hoy = hoyISO();
   const semanas = rejillaMes(y, m);

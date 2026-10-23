@@ -40,7 +40,11 @@ with sync_playwright() as p:
     page.clock.set_fixed_time(datetime.datetime(2026, 10, 23, 10, 0, 0))
     page.on('console', lambda m: errores.append(f'consola[{m.type}]: {m.text}') if m.type in ('error', 'warning') and 'Service Worker registration blocked' not in m.text else None)
     page.on('pageerror', lambda e: errores.append(f'pageerror: {e}'))
-    page.on('dialog', lambda d: d.accept())
+    mensajes, ACEPTAR = [], [True]
+    def dialogo(d):
+        mensajes.append(d.message)
+        (d.accept() if ACEPTAR[0] else d.dismiss())
+    page.on('dialog', dialogo)
 
     print('1) Jorge: login y calendario nuevo')
     page.goto(URL)
@@ -321,6 +325,152 @@ with sync_playwright() as p:
     page.screenshot(path=f'{CAP}/13d-calendario-columnas.png', full_page=True)
     tab(page, 'Más')
     page.get_by_label('Cómo se ve la agenda').select_option('lista')
+
+    print('13e) Calendario: vista semanal')
+    tab(page, 'Calendario')
+    page.locator('.seg button', has_text='Semana').click(); page.wait_for_timeout(300)
+    page.locator('.barra-nav button.pequeno').click(); page.wait_for_timeout(300)
+    comprobar(page.locator('.dia-sem').count() == 7, 'la vista semanal muestra 7 tarjetas de día')
+    comprobar(page.locator('.barra-nav h2').inner_text().strip().startswith('19'), f"la semana de hoy empieza el lunes 19: «{page.locator('.barra-nav h2').inner_text()}»")
+    tarjeta = lambda d: page.locator(f'.dia-sem[data-dia="{d}"]')
+    comprobar(tarjeta('2026-10-24').locator('.fila-evento', has_text='Cine').count() == 1, 'el sábado 24 trae "Cine"')
+    comprobar(tarjeta('2026-10-23').get_attribute('class').count('hoy') == 1, 'hoy (23) marcado')
+    comprobar('Libre' in tarjeta('2026-10-21').inner_text(), 'un día sin nada dice "Libre"')
+    page.locator('.chip-tipo', has_text='Plan').click(); page.wait_for_timeout(200)
+    comprobar(tarjeta('2026-10-24').locator('.fila-evento', has_text='Cine').count() == 0, 'el filtro por tipo también funciona en la semana')
+    page.locator('.chip-tipo', has_text='Plan').click(); page.wait_for_timeout(200)
+    page.get_by_label('Semana siguiente').click(); page.wait_for_timeout(300)
+    comprobar(tarjeta('2026-10-27').locator('.fila-evento', has_text='Dentista').count() == 1, 'semana siguiente: "Dentista" el martes 27')
+    comprobar(page.locator('.menu-resumen').count() >= 1, 'se ve un resumen del menú en los días que lo tienen')
+    page.locator('.dia-sem-cab', has_text='28').click(); page.wait_for_timeout(200)
+    page.locator('.fab').click()
+    page.locator('.tipo-btn', has_text='Plan').click()
+    comprobar(page.get_by_label('Fecha').input_value() == '2026-10-28', 'al tocar un día y pulsar + el evento nuevo es de ese día')
+    page.get_by_label('Cerrar').click()
+    page.reload(); page.wait_for_timeout(600); tab(page, 'Calendario')
+    comprobar(page.locator('.dia-sem').count() == 7, 'la vista elegida (Semana) se recuerda al recargar')
+    page.screenshot(path=f'{CAP}/13e-calendario-semana.png', full_page=True)
+    page.locator('.seg button', has_text='Mes').click(); page.wait_for_timeout(300)
+    comprobar(page.locator('.dia').count() in (35, 42) and page.locator('.dia-sem').count() == 0, 'volver a Mes')
+
+    print('13f) Arrastrar para mover eventos (línea de tiempo)')
+    DB = lambda: page.evaluate("JSON.parse(localStorage.getItem('falso_db')).eventos")
+    ev_db = lambda t: next(e for e in DB() if e['titulo'] == t)
+    nuevo_evento('Deporte', 'Yoga', '2026-10-24', '17:00', '18:00', rep='semanal', hasta='2026-11-14', para='Paula')
+    tab(page, 'Más'); page.get_by_label('Cómo se ve la agenda').select_option('columnas')
+    tab(page, 'Inicio'); page.locator('.seg button', has_text='Mañana').click(); page.wait_for_timeout(300)
+    rej = lambda: page.locator('.agenda-tl').last
+    def agarrar(titulo, i=0, tactil=False):
+        pieza = rej().locator('.tl-ev', has_text=titulo).nth(i)
+        pieza.scroll_into_view_if_needed()
+        bx = pieza.bounding_box()
+        x, y = bx['x'] + bx['width'] / 2, bx['y'] + min(bx['height'] / 2, 14)
+        if tactil:
+            cdp = page.context.new_cdp_session(page)
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': x, 'y': y}]})
+            page.wait_for_timeout(650)
+            return pieza, x, y, cdp
+        page.mouse.move(x, y); page.mouse.down(); page.mouse.move(x, y + 8, steps=3); page.wait_for_timeout(80)
+        return pieza, x, y + 8, None
+    def mover(x, y, dx, dy, cdp=None):
+        for k in range(1, 9):
+            if cdp: cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x + dx * k / 8, 'y': y + dy * k / 8}]})
+            else: page.mouse.move(x + dx * k / 8, y + dy * k / 8)
+            page.wait_for_timeout(30)
+        page.wait_for_timeout(120)
+    def soltar(cdp=None):
+        if cdp: cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        else: page.mouse.up()
+        page.wait_for_timeout(500)
+    ancho_col = rej().locator('.tl-cols').bounding_box()['width'] / 2
+    cab = [c.strip() for c in rej().locator('.cols-nombre').all_inner_texts()]
+    dir_paula = 1 if cab.index('Paula Gómez') > cab.index('Jorge Pérez') else -1  # +1 = Paula está a la derecha de Jorge
+
+    # 1) mover en el tiempo con el ratón: Pádel noche (Jorge) 18:00-19:30 → una hora antes
+    pieza, x, y, _ = agarrar('Pádel noche')
+    comprobar('arrastrando' in pieza.get_attribute('class'), 'al arrastrar con el ratón la pieza queda "levantada"')
+    comprobar(rej().locator('.tl-hora.solo-exp').first.is_visible(), 'mientras se arrastra aparece la escala horaria completa')
+    mover(x, y, 0, -72)
+    page.screenshot(path=f'{CAP}/13f-durante-arrastre.png')
+    comprobar('17:00' in pieza.inner_text() and '18:30' in pieza.inner_text(), f"la hora se actualiza mientras se arrastra: «{pieza.inner_text().strip()[:20]}»")
+    soltar()
+    e = ev_db('Pádel noche')
+    comprobar(e['hora_inicio'].startswith('17:00') and e['hora_fin'].startswith('18:30'), f"guardado 17:00-18:30 (dura lo mismo): {e['hora_inicio']}-{e['hora_fin']}")
+    comprobar(e['owner_id'].endswith('0a'), 'sigue siendo de Jorge')
+    comprobar(page.get_by_role('dialog').count() == 0, 'soltar no abre el editor')
+    comprobar(rej().locator('.tl-hora.solo-exp').first.is_hidden(), 'al soltar vuelve la línea de tiempo compacta')
+
+    # 2) cambiar de columna (Paula es pareja → puede pasar el plan de Jorge a su columna) y de hora
+    pieza, x, y, _ = agarrar('Peli')
+    mover(x, y, dir_paula * ancho_col, -36)
+    comprobar(rej().locator('.col-guia.destino').count() == 1, 'la columna de destino se resalta')
+    soltar()
+    e = ev_db('Peli')
+    comprobar(e['owner_id'].endswith('0b'), 'la pareja puede pasar el evento a la columna de Paula')
+    comprobar(e['hora_inicio'].startswith('19:30'), f"y lo adelanta media hora: {e['hora_inicio']}")
+
+    # 3) un evento de "los dos" solo se mueve en vertical aunque se arrastre a un lado
+    pieza, x, y, _ = agarrar('Comida en familia')
+    mover(x, y, ancho_col, 36)
+    soltar()
+    e = ev_db('Comida en familia')
+    comprobar(e['compartido'] is True and e['hora_inicio'].startswith('14:30'), f"evento de los dos: sigue siendo de todos y baja media hora ({e['hora_inicio']})")
+
+    # 4) series: avisa de que cambia toda la serie y cuántas semanas
+    mensajes.clear(); ACEPTAR[0] = False
+    pieza, x, y, _ = agarrar('Yoga')
+    mover(x, y, 0, -72); soltar()
+    comprobar(len(mensajes) >= 1 and 'serie' in mensajes[0] and '4 semanas' in mensajes[0], f'aviso de serie: {mensajes[:1]}')
+    comprobar(ev_db('Yoga')['hora_inicio'].startswith('17:00'), 'si se cancela el aviso no se cambia nada')
+    mensajes.clear(); ACEPTAR[0] = True
+    pieza, x, y, _ = agarrar('Yoga')
+    mover(x, y, 0, -72); soltar()
+    comprobar(ev_db('Yoga')['hora_inicio'].startswith('16:00') and ev_db('Yoga')['hora_fin'].startswith('17:00'), 'al aceptar se cambia la serie (16:00-17:00)')
+    ACEPTAR[0] = True
+
+    # 5) un clic normal sigue abriendo el editor
+    rej().locator('.tl-ev', has_text='EF').first.click(); page.wait_for_timeout(200)
+    comprobar(page.get_by_role('dialog').count() == 1, 'un toque/clic normal sigue abriendo el editor')
+    page.get_by_label('Cerrar').click()
+
+    # 6) táctil: no se mueve con un toque corto ni al desplazar; sí al mantener pulsado
+    antes = ev_db('EF')['hora_inicio']
+    pieza = rej().locator('.tl-ev', has_text='EF').first
+    bx = pieza.bounding_box(); x, y = bx['x'] + bx['width'] / 2, bx['y'] + 10
+    cdp = page.context.new_cdp_session(page)
+    cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': x, 'y': y}]})
+    for k in range(1, 6): cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x, 'y': y + 12 * k}]}); page.wait_for_timeout(40)
+    cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []}); page.wait_for_timeout(300)
+    comprobar(ev_db('EF')['hora_inicio'] == antes, 'táctil: arrastrar sin mantener pulsado NO mueve el evento (es desplazarse)')
+    pieza, x, y, cdp = agarrar('EF', tactil=True)
+    comprobar('arrastrando' in pieza.get_attribute('class'), 'táctil: tras mantener pulsado la pieza se levanta')
+    mover(x, y, 0, -36, cdp); soltar(cdp)
+    comprobar(ev_db('EF')['hora_inicio'].startswith('18:30'), f"táctil: mantener y arrastrar mueve el evento (19:00 → {ev_db('EF')['hora_inicio']})")
+
+    # 7) permisos: si Paula pasa a ser "amigo", solo mueve lo suyo y solo dentro de su columna
+    page.evaluate("""() => { const db = JSON.parse(localStorage.getItem('falso_db'));
+      db.miembros.find(m => m.user_id.endsWith('0b')).relacion = 'amigo';
+      db.eventos.find(e => e.titulo === 'Comida en familia').owner_id = '00000000-0000-0000-0000-00000000000a'; localStorage.setItem('falso_db', JSON.stringify(db)); }""")
+    page.reload(); page.wait_for_timeout(700)
+    tab(page, 'Inicio'); page.locator('.seg button', has_text='Mañana').click(); page.wait_for_timeout(300)
+    antes = ev_db('Pádel liga')['hora_inicio']
+    pieza, x, y, _ = agarrar('Pádel liga')
+    comprobar('arrastrando' not in pieza.get_attribute('class'), 'amigo: un evento de otra persona NO se levanta')
+    mover(x, y, 0, -72); soltar()
+    comprobar(ev_db('Pádel liga')['hora_inicio'] == antes, 'amigo: el evento de Jorge no se mueve')
+    pieza, x, y, _ = agarrar('Series')
+    mover(x, y, -dir_paula * ancho_col, 36)
+    comprobar(rej().locator('.col-guia.no').count() == 1, 'amigo: la columna de Jorge se marca como no permitida')
+    soltar()
+    e = ev_db('Series')
+    comprobar(e['owner_id'].endswith('0b'), 'amigo: su evento no puede pasar a la columna de Jorge')
+    comprobar(e['hora_inicio'].startswith('20:30'), f"amigo: pero sí cambia de hora en su columna ({e['hora_inicio']})")
+    pieza, x, y, _ = agarrar('Comida en familia')
+    comprobar('arrastrando' not in pieza.get_attribute('class'), 'amigo: tampoco mueve un evento de los dos creado por Jorge')
+    page.mouse.up(); page.wait_for_timeout(250)
+    if page.get_by_role('dialog').count(): page.get_by_label('Cerrar').click()  # como amigo se abre en solo lectura
+    page.screenshot(path=f'{CAP}/13f-arrastrar.png', full_page=True)
+    tab(page, 'Más'); page.get_by_label('Cómo se ve la agenda').select_option('lista')
 
     print('14) Inicio con el menú de hoy y tema oscuro')
     tab(page, 'Inicio')
