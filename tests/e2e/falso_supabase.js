@@ -179,6 +179,25 @@ var supabase = (function () {
       for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
       guardar(db); return { data: null, error: null };
     },
+    borrar_mi_cuenta() {
+      const u = sesionActual(); const db = cargar();
+      for (const e of db.espacios.filter((x) => x.creado_por === u.id)) {
+        const otros = db.miembros.filter((m) => m.espacio_id === e.id && m.user_id !== u.id);
+        if (!otros.length) {
+          db.espacios = db.espacios.filter((x) => x.id !== e.id);
+          for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas']) db[t] = db[t].filter((x) => x.espacio_id !== e.id);
+          continue;
+        }
+        const nuevo = otros.find((m) => m.relacion === 'pareja');
+        if (!nuevo) return err(`Creaste «${e.nombre}» y lo comparten otras personas, pero ninguna tiene el rol «pareja». Pon a alguien como «pareja» (Más → Personas) o borra ese calendario, y vuelve a intentarlo.`);
+        e.creado_por = nuevo.user_id;
+      }
+      for (const m of db.miembros.filter((x) => x.user_id === u.id)) { const r = limpiar(db, m.espacio_id, u.id); if (r.error) return r; }
+      db.invitaciones = db.invitaciones.filter((i) => i.creada_por !== u.id && i.email !== (u.email || '').toLowerCase());
+      db.amistades = db.amistades.filter((a) => a.de !== u.id && a.para !== u.id);
+      db.perfiles = db.perfiles.filter((p) => p.id !== u.id);
+      guardar(db); return { data: null, error: null };
+    },
     cambiar_mi_color({ p_espacio, p_color }) {
       const u = sesionActual(); const db = cargar();
       const m = db.miembros.find((x) => x.espacio_id === p_espacio && x.user_id === u.id);

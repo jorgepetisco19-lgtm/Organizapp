@@ -717,6 +717,45 @@ grant select, insert, update, delete on public.eventos, public.menu to authentic
 grant select, insert, delete on public.lineas to authenticated;
 grant update (texto, hecha, orden) on public.lineas to authenticated;
 
+-- Borra TU cuenta y todo lo tuyo. Solo puede llamarla la propia persona (borra la cuenta de quien llama, nunca otra).
+--  - Calendarios que creaste y nadie más usa: se borran enteros.
+--  - Calendarios que creaste y comparten otras personas: pasan a ser de otra persona con rol «pareja»
+--    (sus eventos «de todos» se quedan ahí). Si no hay nadie con ese rol, no se borra nada y se avisa.
+--  - En los demás calendarios: se borran tus eventos y menús y sales de ellos.
+--  - Se borran tus invitaciones enviadas, las que tenías pendientes, tus amistades y tu perfil.
+create or replace function public.borrar_mi_cuenta()
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  uid    uuid := (select auth.uid());
+  correo text;
+  r      record;
+  nuevo  uuid;
+begin
+  if uid is null then raise exception 'No has iniciado sesión'; end if;
+
+  for r in select id, nombre from public.espacios where creado_por = uid loop
+    if not exists (select 1 from public.miembros where espacio_id = r.id and user_id <> uid) then
+      delete from public.espacios where id = r.id;
+    else
+      select user_id into nuevo from public.miembros
+        where espacio_id = r.id and user_id <> uid and relacion = 'pareja' order by unido, user_id limit 1;
+      if nuevo is null then
+        raise exception 'Creaste «%» y lo comparten otras personas, pero ninguna tiene el rol «pareja». Pon a alguien como «pareja» (Más → Personas) o borra ese calendario, y vuelve a intentarlo.', r.nombre;
+      end if;
+      update public.espacios set creado_por = nuevo where id = r.id;
+    end if;
+  end loop;
+
+  for r in select espacio_id from public.miembros where user_id = uid loop
+    perform public.limpiar_miembro(r.espacio_id, uid);
+  end loop;
+
+  select lower(email) into correo from auth.users where id = uid;
+  delete from public.invitaciones where creada_por = uid or (correo is not null and email = correo);
+
+  delete from auth.users where id = uid;   -- arrastra perfil, amistades y todo lo que cuelga de él
+end $$;
+
 revoke all on function
   public.es_miembro(uuid), public.es_pareja(uuid), public.comparte_espacio(uuid),
   public.puede_editar(uuid, uuid), public.iniciar_perfil(text), public.crear_espacio(text),
@@ -724,7 +763,7 @@ revoke all on function
   public.tocar_actualizado(),
   public.invitaciones_enviadas(uuid), public.invitar_amigo(uuid, uuid, text), public.salir_espacio(uuid),
   public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text), public.cambiar_rol(uuid, uuid, text),
-  public.color_libre(uuid, text), public.limpiar_miembro(uuid, uuid), public.puede_editar_linea(uuid, uuid), public.limitar_lineas(),
+  public.color_libre(uuid, text), public.limpiar_miembro(uuid, uuid), public.puede_editar_linea(uuid, uuid), public.limitar_lineas(), public.borrar_mi_cuenta(),
   public.buscar_codigo(text), public.pedir_amistad(text), public.responder_amistad(uuid, boolean),
   public.quitar_amistad(uuid), public.mis_amistades(), public.regenerar_codigo(), public.normalizar_codigo(text), public.generar_codigo()
   from public, anon, authenticated;
@@ -737,7 +776,7 @@ grant execute on function
   public.quitar_amistad(uuid), public.mis_amistades(), public.regenerar_codigo(),
   public.invitaciones_enviadas(uuid), public.invitar_amigo(uuid, uuid, text), public.salir_espacio(uuid),
   public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text), public.cambiar_rol(uuid, uuid, text),
-  public.puede_editar_linea(uuid, uuid)
+  public.puede_editar_linea(uuid, uuid), public.borrar_mi_cuenta()
   to authenticated;
 
 -- Avisa a la API de que hay tablas nuevas

@@ -27,6 +27,11 @@ function exactamente(data, n, mensaje) {
 export const iniciarSesion = async () =>
   ok(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }));
 export const cerrarSesion = async () => ok(await sb.auth.signOut());
+// Borra la cuenta y todo lo suyo en la base (función 07). Después se cierra la sesión solo en este móvil: la cuenta ya no existe.
+export async function borrarMiCuenta() {
+  ok(await sb.rpc('borrar_mi_cuenta'));
+  try { await sb.auth.signOut({ scope: 'local' }); } catch { /* la sesión ya no es válida */ }
+}
 export const alCambiarSesion = (cb) => sb.auth.onAuthStateChange(cb);
 
 // ---------- contexto: perfil, calendarios, personas, invitaciones ----------
@@ -119,6 +124,8 @@ export const guardarLinea = async (id, campos) =>
   exactamente(ok(await sb.from('lineas').update(campos).eq('id', id).select('id')), 1);
 export const borrarLinea = async (id) =>
   exactamente(ok(await sb.from('lineas').delete().eq('id', id).select('id')), 1);
+export const marcarPasosEvento = async (eventoId, hecha) =>
+  ok(await sb.from('lineas').update({ hecha }).eq('evento_id', eventoId).select('id'));
 export const quitarMarcadasCompra = async (espacioId) =>
   ok(await sb.from('lineas').delete().eq('espacio_id', espacioId).is('evento_id', null).eq('hecha', true));
 export const guardarEvento = async (id, campos) =>

@@ -739,6 +739,76 @@ await db.exec('reset role');
 r = await q(`select count(*)::int n from public.lineas where espacio_id=$1`, [eL]);
 ok('Al borrar el calendario se borra su lista de la compra', r.rows[0].n === 0, r.error || r.rows[0].n);
 
+// ---------- 10c. Borrar mi cuenta ----------
+console.log('\n10c. Borrar mi cuenta y mis datos');
+await db.exec('reset role');
+const ID = (n) => `00000000-0000-0000-0000-0000000001${String(n).padStart(2, '0')}`;
+const B = { id: ID(1), email: 'borra@test.com' }, D2 = { id: ID(2), email: 'duena@test.com' }, P2 = { id: ID(3), email: 'pareja2@test.com' }, A2 = { id: ID(4), email: 'amigo2@test.com' }, S2 = { id: ID(5), email: 'solo@test.com' }, X2 = { id: ID(6), email: 'ajeno@test.com' };
+for (const u of [B, D2, P2, A2, S2, X2]) {
+  await db.query(`insert into auth.users(id,email) values ($1,$2)`, [u.id, u.email]);
+  await db.query(`insert into public.perfiles(id,nombre) values ($1,$2)`, [u.id, u.email.split('@')[0]]);
+}
+const cSolo = ID(11), cAjeno = ID(12), cMio = ID(13), cMioAmigos = ID(14);
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Solo mío',$2),($3,'De la dueña',$4),($5,'Compartido mío',$2),($6,'Mío con amigos',$2)`, [cSolo, B.id, cAjeno, D2.id, cMio, cMioAmigos]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values
+  ($1,$2,'pareja','#111111'),
+  ($3,$4,'pareja','#222222'),($3,$2,'amigo','#333333'),
+  ($5,$2,'pareja','#111111'),($5,$6,'pareja','#444444'),($5,$7,'amigo','#555555'),
+  ($8,$2,'pareja','#111111'),($8,$7,'amigo','#555555')`, [cSolo, B.id, cAjeno, D2.id, cMio, P2.id, A2.id, cMioAmigos]);
+await db.query(`insert into public.eventos(id,espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values
+  ($1,$2,$3,'plan','Mi plan en el de ella','2026-11-05',false,$3),
+  ($4,$5,$3,'plan','Mi plan privado','2026-11-05',false,$3),
+  ($6,$5,$3,'plan','Plan de todos','2026-11-06',true,$3),
+  ($7,$5,$8,'plan','Plan de Pareja2','2026-11-07',false,$8)`, [ID(21), cAjeno, B.id, ID(22), cMio, ID(23), ID(24), P2.id]);
+await db.query(`insert into public.lineas(espacio_id,evento_id,texto,creado_por) values ($1,null,'Leche del ajeno',$2),($3,null,'Pan mío',$2)`, [cAjeno, B.id, cSolo]);
+await db.query(`insert into public.amistades(de,para,estado) values ($1,$2,'aceptada')`, [B.id, X2.id]);
+await db.query(`insert into public.invitaciones(espacio_id,email,relacion,creada_por) values ($1,'otro@test.com','amigo',$2),($3,$4,'amigo',$5)`, [cMio, B.id, cAjeno, B.email, D2.id]);
+
+await como('anon');
+r = await q(`select public.borrar_mi_cuenta()`);
+ok('Sin sesión no se puede borrar una cuenta', falla(r, 'permission denied'), r.error);
+
+// C. creador de un calendario compartido solo con un «amigo»: no se borra nada
+await como(B);
+r = await q(`select public.borrar_mi_cuenta()`);
+ok('Si creaste un calendario compartido donde nadie es «pareja», se avisa y no se borra', falla(r, 'ninguna tiene el rol'), r.error);
+await db.exec('reset role');
+r = await q(`select (select count(*)::int from auth.users where id=$1) u, (select count(*)::int from public.eventos where owner_id=$1) e, (select count(*)::int from public.espacios where id=$2) c`, [B.id, cSolo]);
+ok('…y todo sigue en su sitio (la operación es atómica)', r.rows[0].u === 1 && r.rows[0].e === 3 && r.rows[0].c === 1, JSON.stringify(r.rows));
+await db.query(`update public.miembros set relacion='pareja' where espacio_id=$1 and user_id=$2`, [cMioAmigos, A2.id]);
+
+// ahora sí
+await como(B);
+r = await q(`select public.borrar_mi_cuenta()`);
+ok('Borrar mi cuenta funciona', !r.error, r.error);
+await db.exec('reset role');
+r = await q(`select (select count(*)::int from auth.users where id=$1) u, (select count(*)::int from public.perfiles where id=$1) p, (select count(*)::int from public.miembros where user_id=$1) m, (select count(*)::int from public.eventos where owner_id=$1) e, (select count(*)::int from public.amistades where de=$1 or para=$1) a, (select count(*)::int from public.invitaciones where creada_por=$1 or email=$2) i`, [B.id, B.email]);
+ok('No queda nada suyo: cuenta, perfil, membresías, eventos, amistades ni invitaciones', Object.values(r.rows[0]).every((n) => n === 0), JSON.stringify(r.rows));
+r = await q(`select count(*)::int n from public.espacios where id=$1`, [cSolo]);
+ok('Su calendario de uso individual se borra entero (con su lista de la compra)', r.rows[0].n === 0 && (await q(`select count(*)::int n from public.lineas where espacio_id=$1`, [cSolo])).rows[0].n === 0);
+r = await q(`select creado_por from public.espacios where id=$1`, [cMio]);
+ok('El calendario compartido que creó pasa a otra persona «pareja»', r.rows[0]?.creado_por === P2.id, JSON.stringify(r.rows));
+r = await q(`select titulo from public.eventos where espacio_id=$1 order by titulo`, [cMio]);
+ok('En él se quedan «Plan de todos» (ahora de la nueva creadora) y lo de la otra persona; su plan privado se borra', JSON.stringify(r.rows.map((x) => x.titulo)) === JSON.stringify(['Plan de Pareja2', 'Plan de todos']), JSON.stringify(r.rows));
+r = await q(`select owner_id from public.eventos where id=$1`, [ID(23)]);
+ok('…y el «Plan de todos» pasa a ser de la nueva creadora', r.rows[0]?.owner_id === P2.id);
+r = await q(`select count(*)::int n from public.eventos where espacio_id=$1`, [cAjeno]);
+ok('En el calendario de otra persona se borran sus eventos y ese calendario sigue existiendo', r.rows[0].n === 0 && (await q(`select count(*)::int n from public.espacios where id=$1`, [cAjeno])).rows[0].n === 1);
+r = await q(`select count(*)::int n, bool_and(creado_por is null) nulo from public.lineas where espacio_id=$1`, [cAjeno]);
+ok('Lo que apuntó en una lista de la compra ajena se queda, ya sin su nombre', r.rows[0].n === 1 && r.rows[0].nulo === true, JSON.stringify(r.rows));
+r = await q(`select count(*)::int n from auth.users where id in ($1,$2,$3,$4,$5)`, [D2.id, P2.id, A2.id, S2.id, X2.id]);
+ok('Las demás personas siguen ahí (solo se borra a quien llama)', r.rows[0].n === 5);
+r = await q(`select count(*)::int n from public.amistades`);
+ok('Su amistad con otra persona desaparece', (await q(`select count(*)::int n from public.amistades where para=$1 or de=$1`, [X2.id])).rows[0].n === 0);
+
+// Una persona ajena borrando su cuenta no toca nada de los demás
+await como(X2);
+r = await q(`select public.borrar_mi_cuenta()`);
+ok('Una persona sin calendarios también puede borrar su cuenta', !r.error, r.error);
+await db.exec('reset role');
+r = await q(`select (select count(*)::int from public.eventos) e, (select count(*)::int from public.espacios) c`);
+ok('…y los calendarios y eventos de los demás no se tocan', r.rows[0].c >= 3 && r.rows[0].e >= 2, JSON.stringify(r.rows));
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -762,6 +832,10 @@ const mig6 = fs.readFileSync(process.env.SQL6_PATH || '/mnt/user-data/outputs/or
 let e6 = null;
 try { await v11.exec(mig6); await v11.exec(mig6); } catch (e) { e6 = e.message; }
 ok('La migración 06 se aplica dos veces sin errores', !e6, e6);
+const mig7 = fs.readFileSync(process.env.SQL7_PATH || '/mnt/user-data/outputs/organizapp/sql/07_borrar_cuenta.sql', 'utf8');
+let e7 = null;
+try { await v11.exec(mig7); await v11.exec(mig7); } catch (e) { e7 = e.message; }
+ok('La migración 07 se aplica dos veces sin errores', !e7, e7);
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -775,7 +849,7 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05+06) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06+07) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

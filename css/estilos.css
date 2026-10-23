@@ -310,3 +310,7 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .compra .peligro { margin-top: 1rem; }
 .compra .barra-nav h2 { text-align: left; }
 .tabs button { min-width: 0; font-size: .74rem; }
+
+/* lista de viñetas sencilla (por ejemplo, en el aviso de borrar la cuenta) */
+.lista-simple { margin: 0 0 12px; padding-left: 20px; }
+.lista-simple li { margin: 4px 0; }

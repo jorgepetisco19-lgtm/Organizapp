@@ -271,6 +271,7 @@ function pantallaBienvenida() {
     el('div', { class: 'fila-botones' },
       el('button', { onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(); }) }, '🔄 Comprobar invitaciones')),
     el('p', {}, el('button', { class: 'enlace', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
+    el('p', {}, el('button', { class: 'enlace', onclick: () => abrirBorrarCuenta() }, 'Borrar mi cuenta y mis datos')),
     enlacesLegales());
 }
 
@@ -383,7 +384,13 @@ async function marcarHecha(ev, fecha, valor) {
   const antes = ev.hechas || [];
   const nuevas = valor ? [...new Set([...antes, dia])].sort() : antes.filter((d) => d !== dia);
   ev.hechas = nuevas; render();
-  try { await D.guardarEvento(ev.id, { hechas: nuevas }); } catch (e) { ev.hechas = antes; render(); aviso(e.message || String(e), true); }
+  try { await D.guardarEvento(ev.id, { hechas: nuevas }); } catch (e) { ev.hechas = antes; render(); aviso(e.message || String(e), true); return; }
+  // al marcar la tarea como hecha, sus pasos pendientes se marcan solos (al desmarcarla, los pasos se quedan como están)
+  const pendientes = valor && !ev.repeticion && ev.pasos ? ev.pasos.filter((p) => !p.hecha) : [];
+  if (pendientes.length) {
+    pendientes.forEach((p) => { p.hecha = true; }); render();
+    try { await D.marcarPasosEvento(ev.id, true); } catch (e) { pendientes.forEach((p) => { p.hecha = false; }); render(); aviso('La tarea se marcó, pero no sus pasos: ' + (e.message || e), true); }
+  }
 }
 
 // Marca un paso de una tarea. Si con él quedan todos hechos, la tarea se marca sola; si se desmarca uno de una tarea que estaba completa, se desmarca.
@@ -1182,8 +1189,36 @@ function vistaMas() {
           try { const reg = await navigator.serviceWorker.getRegistration(); await reg?.update(); aviso('Buscando actualización…'); } catch { aviso('No se pudo comprobar.', true); }
         } }, '🔄 Buscar actualización')),
       el('p', { class: 'suave' }, 'Versión ', el('span', { class: 'version-txt' }, S.version)),
-      el('button', { class: 'peligro', onclick: () => D.cerrarSesion() }, 'Cerrar sesión'),
-      enlacesLegales()));
+      el('button', { class: 'peligro', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
+    el('section', { class: 'tarjeta', id: 'mi-cuenta' },
+      el('h2', {}, 'Tu cuenta y tus datos'),
+      el('p', { class: 'suave' }, 'Solo guardamos tu nombre, tu correo y lo que escribes aquí. Puedes borrarlo todo cuando quieras.'),
+      el('button', { class: 'peligro', onclick: () => abrirBorrarCuenta() }, 'Borrar mi cuenta y mis datos')),
+    enlacesLegales());
+}
+
+function abrirBorrarCuenta() {
+  const confirmar = el('input', { type: 'text', autocomplete: 'off', autocapitalize: 'characters', placeholder: 'Escribe BORRAR', 'aria-label': 'Escribe BORRAR para confirmar' });
+  const boton = el('button', { type: 'button', class: 'peligro', disabled: true }, 'Borrar mi cuenta para siempre');
+  confirmar.addEventListener('input', () => { boton.disabled = confirmar.value.trim().toUpperCase() !== 'BORRAR'; });
+  const cerrar = modal('Borrar mi cuenta', el('div', { class: 'formulario' },
+    el('p', {}, 'Se borra para siempre, de nuestra base de datos:'),
+    el('ul', { class: 'lista-simple' },
+      el('li', {}, 'Tu cuenta, tu nombre y tu correo.'),
+      el('li', {}, 'Tus eventos y menús en todos los calendarios.'),
+      el('li', {}, 'Tus invitaciones y amistades.'),
+      el('li', {}, 'Los calendarios que solo usas tú, con su lista de la compra.')),
+    el('p', { class: 'suave' }, 'Los calendarios que compartes siguen para las demás personas, sin lo tuyo. Si creaste uno compartido, pasa a otra persona con rol «pareja»; si no hay nadie así, la app te lo dirá antes de borrar nada. Lo que apuntaste en una lista de la compra compartida se queda, sin tu nombre. Tu cuenta de Google no se toca.'),
+    el('p', {}, el('strong', {}, 'No se puede deshacer.')),
+    el('label', {}, 'Para confirmar, escribe BORRAR', confirmar),
+    el('div', { class: 'fila-botones' }, boton, el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'))));
+  boton.addEventListener('click', () => conCarga(boton, async () => {
+    await D.borrarMiCuenta();
+    cerrar();
+    try { Object.keys(localStorage).filter((k) => k.startsWith('org_')).forEach((k) => localStorage.removeItem(k)); } catch { /* sin almacenamiento */ }
+    aviso('Tu cuenta y tus datos se han borrado');
+  }));
+  setTimeout(() => confirmar.focus(), 50);
 }
 
 // ---------- instalar como app ----------
@@ -1248,7 +1283,14 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
 
   // Tarea hecha (solo al editar) y pasos de la tarea (solo tareas que no se repiten).
   const diaHecha = ev ? (ev.repeticion ? (ocurrencia || ev.fecha) : ev.fecha) : null;
-  const hechaIn = el('input', { type: 'checkbox', checked: ev ? (ev.hechas || []).includes(diaHecha) : false, disabled: !editable });
+  let pasosAlMarcar = null; // estado de los pasos antes de marcar «Hecha» (para devolverlos si se desmarca antes de guardar)
+  const hechaIn = el('input', { type: 'checkbox', checked: ev ? (ev.hechas || []).includes(diaHecha) : false, disabled: !editable, onchange: () => {
+    if (hechaIn.checked && !ev?.repeticion && pasosEd.some((s) => s.id && !s.hecha)) {
+      pasosAlMarcar = pasosEd.map((s) => s.hecha); pasosEd.forEach((s) => { s.hecha = true; }); pintarPasos();
+    } else if (!hechaIn.checked && pasosAlMarcar) {
+      pasosEd.forEach((s, i) => { s.hecha = pasosAlMarcar[i] ?? s.hecha; }); pasosAlMarcar = null; pintarPasos();
+    }
+  } });
   const hechaUI = !nuevo ? el('label', { class: 'check-fila' }, hechaIn, el('span', {}, ev?.repeticion ? 'Hecha este día' : 'Hecha')) : null;
   const pasosEd = nuevo ? [] : (ev.pasos || []).slice();
   let huboCambioPasos = false;
@@ -1354,7 +1396,10 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
             await D.crearLineas(pasosEd.map((s, i) => ({ espacio_id: S.espacio.id, evento_id: idNuevo, texto: s.texto, orden: base + i, creado_por: S.user.id })));
           } catch (e) { aviso('Se guardó la tarea, pero no los pasos: ' + (e.message || e), true); cerrar(); await cargarVista(true); return; }
         }
-      } else await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
+      } else {
+        await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
+        if (pasosAlMarcar && hechaIn.checked) await D.marcarPasosEvento(ev.id, true);
+      }
       cerrar();
       aviso(destinos.length ? `Guardado y copiado a ${destinos.map((e) => e.nombre).join(', ')}` : 'Guardado');
       await cargarVista(true);
