@@ -412,6 +412,21 @@ begin
   perform public.limpiar_miembro(p_espacio, p_user);
 end $$;
 
+-- Solo quien creó el calendario puede cambiar el rol de los demás (nunca el suyo).
+create or replace function public.cambiar_rol(p_espacio uuid, p_user uuid, p_relacion text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare uid uuid := (select auth.uid());
+begin
+  if uid is null then raise exception 'No has iniciado sesión'; end if;
+  if p_relacion not in ('pareja', 'amigo') then raise exception 'Rol no válido.'; end if;
+  if (select creado_por from public.espacios where id = p_espacio) is distinct from uid then
+    raise exception 'Solo quien creó el calendario puede cambiar roles.';
+  end if;
+  if p_user = uid then raise exception 'Quien creó el calendario siempre es pareja.'; end if;
+  update public.miembros set relacion = p_relacion where espacio_id = p_espacio and user_id = p_user;
+  if not found then raise exception 'Esa persona no está en el calendario.'; end if;
+end $$;
+
 -- Solo quien creó el calendario puede borrarlo (se borra para todos, con todo lo que contiene).
 create or replace function public.eliminar_espacio(p_espacio uuid)
 returns void language plpgsql security definer set search_path = '' as $$
@@ -644,7 +659,7 @@ revoke all on function
   public.mis_invitaciones(), public.aceptar_invitacion(uuid), public.rechazar_invitacion(uuid),
   public.tocar_actualizado(),
   public.invitaciones_enviadas(uuid), public.invitar_amigo(uuid, uuid, text), public.salir_espacio(uuid),
-  public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text),
+  public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text), public.cambiar_rol(uuid, uuid, text),
   public.color_libre(uuid, text), public.limpiar_miembro(uuid, uuid),
   public.buscar_codigo(text), public.pedir_amistad(text), public.responder_amistad(uuid, boolean),
   public.quitar_amistad(uuid), public.mis_amistades(), public.regenerar_codigo(), public.normalizar_codigo(text), public.generar_codigo()
@@ -657,7 +672,7 @@ grant execute on function
   public.buscar_codigo(text), public.pedir_amistad(text), public.responder_amistad(uuid, boolean),
   public.quitar_amistad(uuid), public.mis_amistades(), public.regenerar_codigo(),
   public.invitaciones_enviadas(uuid), public.invitar_amigo(uuid, uuid, text), public.salir_espacio(uuid),
-  public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text)
+  public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text), public.cambiar_rol(uuid, uuid, text)
   to authenticated;
 
 -- Avisa a la API de que hay tablas nuevas

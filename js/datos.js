@@ -71,6 +71,7 @@ export const borrarInvitacion = async (id) =>
   exactamente(ok(await sb.from('invitaciones').delete().eq('id', id).select('id')), 1);
 export const renombrarEspacio = async (espacioId, nombre) => ok(await sb.rpc('renombrar_espacio', { p_espacio: espacioId, p_nombre: nombre }));
 export const quitarMiembro = async (espacioId, userId) => ok(await sb.rpc('quitar_miembro', { p_espacio: espacioId, p_user: userId }));
+export const cambiarRol = async (espacioId, userId, relacion) => ok(await sb.rpc('cambiar_rol', { p_espacio: espacioId, p_user: userId, p_relacion: relacion }));
 export const salirEspacio = async (espacioId) => ok(await sb.rpc('salir_espacio', { p_espacio: espacioId }));
 export const eliminarEspacio = async (espacioId) => ok(await sb.rpc('eliminar_espacio', { p_espacio: espacioId }));
 export const cambiarMiColor = async (espacioId, color) => ok(await sb.rpc('cambiar_mi_color', { p_espacio: espacioId, p_color: color }));

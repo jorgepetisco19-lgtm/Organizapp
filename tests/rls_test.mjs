@@ -551,6 +551,11 @@ ok('No se puede cambiar el color en un calendario ajeno', falla(r, 'No estás'),
 r = await q(`update public.miembros set relacion='pareja' where user_id=$1`, [U.tercero.id]);
 ok('Nadie se sube el rol a sí mismo (miembros no se escribe directamente)', falla(r, 'permission denied'), r.error);
 
+r = await q(`select public.cambiar_rol($1,$2,'pareja')`, [espP, U.tercero.id]);
+ok('Con rol amigo no puede cambiar roles (ni subirse el suyo)', falla(r, 'Solo quien creó'), r.error);
+r = await q(`select public.cambiar_rol($1,$2,'pareja')`, [espP, U.jorge.id]);
+ok('Con rol amigo no puede cambiar el rol de quien creó el calendario', falla(r, 'Solo quien creó'), r.error);
+
 await como(U.jorge);
 r = await q(`update public.eventos set titulo='Editado por Jorge' where id=$1 returning id`, [evT]);
 ok('Jorge (pareja) sí edita la capa de Tercero', r.rows.length === 1, r.error);
@@ -564,6 +569,20 @@ r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.paula.id]);
 ok('No se puede quitar a quien no está', falla(r, 'no está'), r.error);
 r = await q(`select public.salir_espacio($1)`, [espP]);
 ok('Quien creó el calendario no puede «salir» (solo borrarlo)', falla(r, 'Creaste'), r.error);
+r = await q(`select public.cambiar_rol($1,$2,'pareja')`, [espP, U.tercero.id]);
+ok('Jorge (creador) sube a Tercero a pareja', !r.error, r.error);
+r = await q(`select relacion from public.miembros where espacio_id=$1 and user_id=$2`, [espP, U.tercero.id]);
+ok('El rol queda guardado como pareja', r.rows[0]?.relacion === 'pareja', JSON.stringify(r.rows));
+r = await q(`select titulo from public.eventos where espacio_id=$1 and owner_id=$2`, [espP, U.tercero.id]);
+ok('Cambiar el rol no borra los eventos de esa persona', r.rows.length >= 1, JSON.stringify(r.rows));
+r = await q(`select public.cambiar_rol($1,$2,'jefe')`, [espP, U.tercero.id]);
+ok('Un rol inventado se rechaza', falla(r, 'Rol no válido'), r.error);
+r = await q(`select public.cambiar_rol($1,$2,'amigo')`, [espP, U.jorge.id]);
+ok('El creador no puede cambiar su propio rol', falla(r, 'siempre es pareja'), r.error);
+r = await q(`select public.cambiar_rol($1,$2,'amigo')`, [espP, U.amigo.id]);
+ok('No se cambia el rol de quien no está en el calendario', falla(r, 'no está'), r.error);
+r = await q(`select public.cambiar_rol($1,$2,'amigo')`, [espP, U.tercero.id]);
+ok('Jorge baja a Tercero otra vez a amigo', !r.error, r.error);
 r = await q(`select public.quitar_miembro($1,$2)`, [espP, U.tercero.id]);
 ok('Jorge quita a Tercero del calendario', !r.error, r.error);
 r = await q(`select titulo, owner_id from public.eventos where espacio_id=$1 order by titulo`, [espP]);
@@ -583,6 +602,8 @@ r = await q(`select public.aceptar_invitacion($1)`, [invT2]);
 ok('Tercero vuelve a entrar, esta vez con rol pareja', !r.error, r.error);
 r = await q(`update public.eventos set titulo='Editado por Tercero' where espacio_id=$1 and owner_id=$2 returning id`, [espP, U.jorge.id]);
 ok('Con rol pareja sí edita la capa de Jorge', r.rows.length >= 1, r.error);
+r = await q(`select public.cambiar_rol($1,$2,'amigo')`, [espP, U.jorge.id]);
+ok('Una pareja que no creó el calendario NO puede cambiar roles ni degradar al creador', falla(r, 'Solo quien creó'), r.error);
 r = await q(`select public.salir_espacio($1)`, [espP]);
 ok('Tercero sale por su cuenta', !r.error, r.error);
 r = await q(`select * from public.eventos where espacio_id=$1`, [espP]);
@@ -623,6 +644,10 @@ const mig4 = fs.readFileSync(process.env.SQL4_PATH || '/mnt/user-data/outputs/or
 let e4 = null;
 try { await v11.exec(mig4); await v11.exec(mig4); } catch (e) { e4 = e.message; }
 ok('La migración 04 se aplica dos veces sin errores', !e4, e4);
+const mig5 = fs.readFileSync(process.env.SQL5_PATH || '/mnt/user-data/outputs/organizapp/sql/05_cambiar_rol.sql', 'utf8');
+let e5 = null;
+try { await v11.exec(mig5); await v11.exec(mig5); } catch (e) { e5 = e.message; }
+ok('La migración 05 se aplica dos veces sin errores', !e5, e5);
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -636,8 +661,13 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
+
+await como('anon');
+r = await q(`select public.cambiar_rol($1,$2,'pareja')`, [espP, U.tercero.id]);
+ok('Sin sesión no se puede cambiar un rol', falla(r, 'permission denied'), r.error);
+await db.exec('reset role');
 
 // ---------- Resumen ----------
 await db.exec('reset role');

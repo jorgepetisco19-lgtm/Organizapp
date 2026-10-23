@@ -149,6 +149,15 @@ var supabase = (function () {
       if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return err('No tienes permiso en este calendario.');
       db.espacios.find((e) => e.id === p_espacio).nombre = String(p_nombre).trim(); guardar(db); return { data: null, error: null };
     },
+    cambiar_rol({ p_espacio, p_user, p_relacion }) {
+      const u = sesionActual(); const db = cargar();
+      if (!['pareja', 'amigo'].includes(p_relacion)) return err('Rol no válido.');
+      if (db.espacios.find((e) => e.id === p_espacio)?.creado_por !== u.id) return err('Solo quien creó el calendario puede cambiar roles.');
+      if (p_user === u.id) return err('Quien creó el calendario siempre es pareja.');
+      const m = db.miembros.find((x) => x.espacio_id === p_espacio && x.user_id === p_user);
+      if (!m) return err('Esa persona no está en el calendario.');
+      m.relacion = p_relacion; guardar(db); return { data: null, error: null };
+    },
     quitar_miembro({ p_espacio, p_user }) {
       const u = sesionActual(); const db = cargar();
       if (!db.miembros.some((m) => m.espacio_id === p_espacio && m.user_id === u.id && m.relacion === 'pareja')) return err('No tienes permiso en este calendario.');

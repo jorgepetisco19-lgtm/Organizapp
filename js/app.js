@@ -919,7 +919,15 @@ function tarjetaCalendario() {
     el('h2', {}, `Calendario «${S.espacio.nombre}»`),
     S.miembros.length === 1 ? el('p', { class: 'suave' }, 'Ahora mismo solo lo ves tú.') : null,
     el('ul', { class: 'personas' }, S.miembros.map((m) => el('li', { class: 'amigo-fila', style: { '--c': m.color } },
-      el('span', {}, el('span', { class: 'punto' }), ` ${m.nombre}${m.id === yo ? ' (tú)' : ''}`, el('span', { class: 'suave' }, ` · ${etiquetaRol(m.relacion)}`)),
+      el('span', {}, el('span', { class: 'punto' }), ` ${m.nombre}${m.id === yo ? ' (tú)' : ''}`, soyCreador && m.id !== yo ? null : el('span', { class: 'suave' }, ` · ${etiquetaRol(m.relacion)}`)),
+      soyCreador && m.id !== yo
+        ? el('select', { class: 'rol-miembro', 'aria-label': `Rol de ${m.nombre}`, onchange: (e) => {
+          const sel = e.currentTarget, nuevo = sel.value;
+          conCarga(sel, async () => {
+            try { await D.cambiarRol(S.espacio.id, m.id, nuevo); } catch (x) { sel.value = m.relacion; throw x; }
+            aviso(`${m.nombre} ahora es ${etiquetaRol(nuevo)}`); await cargarTodo();
+          });
+        } }, el('option', { value: 'pareja', selected: m.relacion === 'pareja' }, 'Pareja'), el('option', { value: 'amigo', selected: m.relacion === 'amigo' }, 'Amigo')) : null,
       esPareja && m.id !== yo && m.id !== S.espacio.creado_por
         ? el('button', { class: 'enlace', onclick: (e) => {
           if (!confirm(`¿Quitar a ${m.nombre} de «${S.espacio.nombre}»? Se borrarán sus eventos y menús en este calendario.`)) return;
