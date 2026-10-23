@@ -910,6 +910,9 @@ function tarjetaCalendario() {
   const rolSel = el('select', { 'aria-label': 'Rol del amigo' },
     el('option', { value: 'amigo' }, 'Amigo: ve todo y edita solo lo suyo'),
     el('option', { value: 'pareja' }, 'Pareja: puede editar todo'));
+  const rolCorreoSel = el('select', { 'aria-label': 'Rol de la persona invitada por correo' },
+    el('option', { value: 'pareja' }, 'Pareja: puede editar todo'),
+    el('option', { value: 'amigo' }, 'Amigo: ve todo y edita solo lo suyo'));
   const hayHueco = S.miembros.length < 5;
 
   return el('section', { class: 'tarjeta', id: 'calendario-ajustes' },
@@ -932,12 +935,13 @@ function tarjetaCalendario() {
     esPareja && hayHueco ? el('details', { class: 'bloque plegable' },
       el('summary', {}, '¿Aún no tiene la app? Invitar por correo'),
       el('label', {}, 'Correo de Google', emailIn),
+      el('label', {}, 'Cómo entra', rolCorreoSel),
       el('p', { class: 'suave' }, 'Escribe el correo de la cuenta con la que entrará. Cuando abra la app con esa cuenta verá la invitación.'),
       el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
         const mail = emailIn.value.trim().toLowerCase();
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) throw new Error('Ese correo no parece válido.');
         if (mail === (S.user.email || '').toLowerCase()) throw new Error('Ese es tu propio correo.');
-        await D.invitar(S.espacio.id, mail, 'pareja', S.user.id);
+        await D.invitar(S.espacio.id, mail, rolCorreoSel.value, S.user.id);
         aviso('Invitación creada');
         await cargarTodo();
       }) }, 'Invitar por correo')) : null,
