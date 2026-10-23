@@ -4,8 +4,9 @@ import * as D from './datos.js';
 import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
-  repetirSemanas, leerImportacion, diffDias, diaSemana,
+  repetirSemanas, leerImportacion, diffDias, diaSemana, plantillaMenu,
 } from './util.js';
+import { crearXlsx, leerXlsx } from './xlsx.js';
 
 // ---------- utilidades de pantalla ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -456,8 +457,10 @@ function vistaMas() {
       ] : null),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
-      el('p', { class: 'suave' }, 'Importa comidas desde un archivo CSV (fecha, persona, franja, hora, texto).'),
-      el('button', { onclick: () => abrirImportar() }, '📥 Importar menú desde CSV')),
+      el('p', { class: 'suave' }, 'Importa comidas desde un Excel. Descarga la plantilla, rellénala y súbela.'),
+      el('div', { class: 'fila-botones' },
+        el('button', { onclick: () => abrirImportar() }, '📥 Importar menú'),
+        el('button', { onclick: () => descargarPlantilla() }, '📄 Descargar plantilla'))),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'La app'),
       el('label', {}, 'Aspecto', temaSel),
@@ -717,10 +720,32 @@ function abrirRepetir() {
     el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', class: 'primario', onclick: (e) => hacer(e.currentTarget) }, 'Repetir'))));
 }
 
-// ---------- importar CSV ----------
+// ---------- importar menú desde Excel (o CSV) ----------
+function descargarPlantilla() {
+  const bytes = crearXlsx(plantillaMenu());
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const a = el('a', { href: url, download: 'plantilla-menu-organizapp.xlsx' });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Devuelve el resultado de leerImportacion para un .xlsx o un .csv (UTF-8 o el CSV normal de Excel).
+async function leerArchivoMenu(file) {
+  const buf = await file.arrayBuffer();
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x50 && b[1] === 0x4b) return leerImportacion(await leerXlsx(buf)); // "PK": un .xlsx
+  if (/\.xlsx$/i.test(file.name)) throw new Error('Este archivo no es un Excel (.xlsx) válido. Prueba a descargarlo o guardarlo de nuevo.');
+  if (b[0] === 0xd0 && b[1] === 0xcf) throw new Error('Este es un Excel antiguo (.xls). Ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».');
+  let texto = new TextDecoder('utf-8').decode(buf);
+  if (texto.includes('\uFFFD')) texto = new TextDecoder('windows-1252').decode(buf); // CSV guardado por Excel sin UTF-8
+  return leerImportacion(texto);
+}
+
 function abrirImportar() {
   const cuerpo = el('div', { class: 'formulario' });
-  const archivo = el('input', { type: 'file', accept: '.csv,text/csv,text/plain', 'aria-label': 'Archivo CSV' });
+  const archivo = el('input', { type: 'file', accept: '.xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'aria-label': 'Archivo de Excel' });
   const zona = el('div', {});
   let leido = null;
 
@@ -728,8 +753,10 @@ function abrirImportar() {
     zona.replaceChildren();
     const f = archivo.files[0];
     if (!f) return;
-    if (f.size > 2_000_000) return zona.append(el('p', { class: 'error-txt' }, 'El archivo es demasiado grande.'));
-    leido = leerImportacion(await f.text());
+    if (f.size > 5_000_000) return zona.append(el('p', { class: 'error-txt' }, 'El archivo es demasiado grande.'));
+    try { leido = await leerArchivoMenu(f); } catch (e) {
+      return zona.append(el('p', { class: 'error-txt', role: 'alert' }, e.message || 'No se pudo leer el archivo.'));
+    }
     if (!leido.filas.length) {
       return zona.append(el('p', { class: 'error-txt' }, leido.errores[0]?.motivo || 'No hay comidas en el archivo.'));
     }
@@ -761,7 +788,8 @@ function abrirImportar() {
   });
 
   cuerpo.append(
-    el('p', { class: 'suave' }, 'Elige el archivo CSV con las columnas: fecha, persona, franja, hora, texto.'),
+    el('p', { class: 'suave' }, 'Elige el Excel (.xlsx) con tus comidas. Si no tienes uno, descarga la plantilla y rellénala.'),
+    el('div', { class: 'fila-botones' }, el('button', { type: 'button', onclick: () => descargarPlantilla() }, '📄 Descargar plantilla')),
     archivo, zona);
   const cerrar = modal('Importar menú', cuerpo);
 }

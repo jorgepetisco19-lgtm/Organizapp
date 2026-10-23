@@ -168,16 +168,38 @@ with sync_playwright() as p:
     comprobar(page.locator('.agenda .fila-evento', has_text='Cena con amigos').count() == 2, 'el evento "para los dos" crea una fila por persona')
     page.screenshot(path=f'{CAP}/07-paula-calendario.png', full_page=True)
 
-    print('10) Importar el CSV real del menú (como Jorge)')
-    tab(page, 'Más'); page.get_by_role('button', name='Cerrar sesión').click()
-    entrar_como(page, 'jorge')
-    page.get_by_role('button', name='Entrar con Google').click()
-    expect(page.locator('nav.tabs')).to_be_visible()
+    print('10) Plantilla de Excel y importación del menú real en .xlsx (como Jorge)')
+    import csv, tempfile, openpyxl
+    tmp = tempfile.mkdtemp()
     tab(page, 'Más')
-    page.get_by_role('button', name=re.compile('Importar menú')).click()
-    page.get_by_label('Archivo CSV').set_input_files(os.path.abspath(CSV))
+    with page.expect_download() as d:
+        page.get_by_role('button', name=re.compile('Descargar plantilla')).first.click()
+    plantilla = os.path.join(tmp, 'plantilla.xlsx'); d.value.save_as(plantilla)
+    wbp = openpyxl.load_workbook(plantilla)
+    comprobar(d.value.suggested_filename == 'plantilla-menu-organizapp.xlsx' and wbp.sheetnames == ['Menú', 'Cómo rellenar'], f'plantilla descargada y válida: {wbp.sheetnames}')
+    # CSV guardado por Excel sin UTF-8 (tildes en Windows-1252) y un archivo que no es Excel
+    open(os.path.join(tmp, 'win.csv'), 'wb').write('Fecha;Persona;Franja;Hora;Texto\r\n02/11/2026;Jorge;Media mañana;11:00;Plátano y té\r\n'.encode('cp1252'))
+    page.get_by_role('button', name=re.compile('Importar menú')).first.click()
+    page.get_by_label('Archivo de Excel').set_input_files(os.path.join(tmp, 'win.csv'))
+    expect(page.locator('.modal')).to_contain_text('Hay 1 comidas')
+    comprobar(True, 'CSV en Windows-1252 se lee: 1 comida, franja «Media mañana» reconocida')
+    open(os.path.join(tmp, 'malo.xlsx'), 'wb').write(b'esto no es un excel')
+    page.get_by_label('Archivo de Excel').set_input_files(os.path.join(tmp, 'malo.xlsx'))
+    page.wait_for_timeout(300)
+    comprobar(page.locator('.modal .error-txt').count() == 1, 'archivo que no es Excel: error claro → ' + page.locator('.modal .error-txt').inner_text())
+    page.get_by_label('Cerrar').click()
+    # El menú real, convertido a un Excel como lo escribiría una persona: fechas y horas reales de Excel
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(['Fecha', 'Persona', 'Franja', 'Hora', 'Texto'])
+    nombres = {'desayuno': 'Desayuno', 'media_manana': 'Media mañana', 'comida': 'Comida', 'merienda': 'Merienda', 'cena': 'Cena'}
+    for r in csv.DictReader(open(CSV, encoding='utf-8')):
+        hh = datetime.time(*map(int, r['hora'].split(':')[:2])) if r['hora'] else None
+        ws.append([datetime.date.fromisoformat(r['fecha']), r['persona'], nombres[r['franja']], hh, r['texto']])
+    xlsx = os.path.join(tmp, 'menu.xlsx'); wb.save(xlsx)
+    page.get_by_role('button', name=re.compile('Importar menú')).first.click()
+    page.get_by_label('Archivo de Excel').set_input_files(xlsx)
     expect(page.locator('.modal')).to_contain_text('132 comidas')
-    comprobar(True, 'el CSV se lee: 132 comidas')
+    comprobar(True, 'el Excel se lee: 132 comidas')
     sel = page.locator('.modal select')
     comprobar(sel.count() == 2, 'dos personas a emparejar (Jorge, Paula)')
     valores = [sel.nth(i).evaluate("s => s.options[s.selectedIndex].text") for i in range(sel.count())]

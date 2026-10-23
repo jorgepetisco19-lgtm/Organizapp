@@ -164,6 +164,11 @@ const clave = (s) => sinTildes(String(s || '').trim().toLowerCase()).replace(/\s
 function fechaDeCSV(s) {
   s = String(s || '').trim();
   if (esFechaISO(s)) return s;
+  // Excel guarda las fechas como número de días desde el 30/12/1899
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const n = Math.floor(Number(s));
+    if (n >= 36526 && n <= 73050) return sumarDias('1899-12-30', n); // años 2000-2099
+  }
   const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
   if (m) {
     const iso = `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
@@ -172,9 +177,22 @@ function fechaDeCSV(s) {
   return null;
 }
 
-// Lee el CSV de importación del menú. Columnas: fecha, persona, franja, hora, texto
-export function leerImportacion(texto) {
-  const filas = parseCSV(texto);
+// Hora escrita a mano ("8:30", "08:30:00") o guardada por Excel (fracción del día: 0.354166…)
+function horaDeCelda(s) {
+  s = String(s || '').trim();
+  if (!s) return '';
+  if (/^\d+(\.\d+)?$/.test(s) && Number(s) < 1) {
+    const min = Math.round(Number(s) * 1440) % 1440;
+    return `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+  }
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  return m ? `${pad(m[1])}:${m[2]}` : s;
+}
+
+// Lee la importación del menú desde un CSV (texto) o desde las filas de un Excel (lista de listas).
+// Columnas: fecha, persona, franja, hora, texto
+export function leerImportacion(entrada) {
+  const filas = Array.isArray(entrada) ? entrada : parseCSV(entrada);
   const errores = [];
   if (!filas.length) return { filas: [], errores: [{ linea: 0, motivo: 'El archivo está vacío' }], personas: [] };
   const cab = filas[0].map(clave);
@@ -190,7 +208,7 @@ export function leerImportacion(texto) {
     const fecha = fechaDeCSV(r[iF]);
     const persona = String(r[iP] || '').trim();
     const franja = clave(r[iFr]);
-    const hora = iH >= 0 ? String(r[iH] || '').trim() : '';
+    const hora = iH >= 0 ? horaDeCelda(r[iH]) : '';
     const textoFila = String(r[iT] || '').replace(/\r/g, '').trim();
     if (!fecha) { errores.push({ linea: i + 1, motivo: 'Fecha no válida' }); continue; }
     if (!persona) { errores.push({ linea: i + 1, motivo: 'Falta la persona' }); continue; }
@@ -206,4 +224,35 @@ export function leerImportacion(texto) {
 export function colorSuave(hex, alfa = 0.18) {
   const n = parseInt(String(hex).replace('#', ''), 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alfa})`;
+}
+
+// ---------- plantilla de importación (para generar el Excel) ----------
+export function plantillaMenu() {
+  return [
+    {
+      nombre: 'Menú',
+      anchos: [14, 14, 16, 8, 60],
+      lista: { columna: 2, valores: FRANJAS.map((f) => f.nombre) },
+      filas: [
+        ['Fecha', 'Persona', 'Franja', 'Hora', 'Texto'],
+        ['26/10/2026', 'Ejemplo', 'Desayuno', '08:30', 'Avena con leche\nFruta del tiempo'],
+        ['26/10/2026', 'Ejemplo', 'Comida', '14:00', 'Lentejas con verduras\nEnsalada'],
+        ['27/10/2026', 'Ejemplo', 'Cena', '21:30', 'Tortilla francesa y pan'],
+      ],
+    },
+    {
+      nombre: 'Cómo rellenar',
+      anchos: [100],
+      filas: [
+        ['Cómo rellenar la plantilla'],
+        ['1. Escribe cada comida en una fila de la hoja «Menú». Puedes borrar las filas de ejemplo (las de persona «Ejemplo» no se importan).'],
+        ['2. Fecha: el día de la comida, por ejemplo 26/10/2026.'],
+        ['3. Persona: el nombre de quien come. Si no coincide con el de la app, al importar podrás elegir quién es quién.'],
+        ['4. Franja: elige de la lista (Desayuno, Media mañana, Comida, Merienda, Cena).'],
+        ['5. Hora: opcional, por ejemplo 14:00.'],
+        ['6. Texto: lo que se come. Puedes poner varias líneas en la misma celda (Alt + Intro en Excel).'],
+        ['7. Guarda el archivo como Excel (.xlsx) y súbelo en Organizapp: Más → Importar menú.'],
+      ],
+    },
+  ];
 }
