@@ -78,7 +78,7 @@ const S = {
   diaSel: hoyInicial, mes: { y: Number(hoyInicial.slice(0, 4)), m: Number(hoyInicial.slice(5, 7)) },
   semana: inicioSemana(hoyInicial),
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
-  version: '…',
+  version: '…', instalar: null,
 };
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
 const miembro = (id) => S.miembros.find((m) => m.id === id);
@@ -229,7 +229,7 @@ function marco() {
   const titulo = { inicio: 'Organizapp', calendario: 'Calendario', menu: 'Menú', mas: 'Más' }[S.tab];
   const fechaFab = S.tab === 'calendario' ? S.diaSel : (S.inicioDia === 'hoy' ? hoyISO() : sumarDias(hoyISO(), 1));
   return el('div', { class: 'marco' },
-    el('header', { class: 'cab' }, el('h1', {}, titulo), S.tab === 'mas' ? null : capasChips()),
+    el('header', { class: 'cab' }, el('h1', {}, titulo), el('span', { class: 'version', title: 'Versión de la app' }, `v${S.version}`), S.tab === 'mas' ? null : capasChips()),
     el('main', { id: 'contenido', class: 'contenido' }, S.cargandoDatos ? el('p', { class: 'vacio' }, 'Cargando…') : vistaActual()),
     el('nav', { class: 'tabs', 'aria-label': 'Secciones' },
       TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; cargarVista(); } },
@@ -456,6 +456,7 @@ function vistaMas() {
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'La app'),
       el('label', {}, 'Aspecto', temaSel),
+      botonInstalar(),
       el('div', { class: 'fila-botones' },
         el('button', { onclick: async () => {
           const url = location.origin + location.pathname;
@@ -467,9 +468,46 @@ function vistaMas() {
         el('button', { onclick: async () => {
           try { const reg = await navigator.serviceWorker.getRegistration(); await reg?.update(); aviso('Buscando actualización…'); } catch { aviso('No se pudo comprobar.', true); }
         } }, '🔄 Buscar actualización')),
-      el('p', { class: 'suave' }, `Versión ${S.version}`),
+      el('p', { class: 'suave' }, 'Versión ', el('span', { class: 'version-txt' }, S.version)),
       el('button', { class: 'peligro', onclick: () => D.cerrarSesion() }, 'Cerrar sesión'),
       enlacesLegales()));
+}
+
+// ---------- instalar como app ----------
+const estaInstalada = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function botonInstalar() {
+  if (estaInstalada()) return el('p', { class: 'suave' }, '✅ Estás usando la app instalada.');
+  return el('div', { class: 'fila-botones' }, el('button', { class: 'primario', onclick: async () => {
+    if (S.instalar) {
+      const ev = S.instalar; S.instalar = null;
+      try { await ev.prompt(); await ev.userChoice; } catch { /* cancelado */ }
+      render();
+      return;
+    }
+    const cerrar = modal('Instalar la app', el('div', { class: 'formulario' },
+      el('p', {}, 'Tu navegador no ofrece la instalación con un solo toque ahora mismo. Puedes hacerlo a mano:'),
+      el('p', {}, el('strong', {}, 'Android (Chrome): '), 'menú ⋮ → «Instalar aplicación» (o «Añadir a pantalla de inicio»).'),
+      el('p', {}, el('strong', {}, 'iPhone (Safari): '), 'botón Compartir → «Añadir a pantalla de inicio».'),
+      el('p', { class: 'suave' }, 'Si Chrome dice que ya está instalada pero no la encuentras, mira en Ajustes → Aplicaciones si hay una instalación a medias y desinstálala.'),
+      el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', onclick: () => cerrar() }, 'Entendido'))));
+  } }, '📲 Instalar en este móvil'));
+}
+
+function ponerVersion(v) {
+  if (!v || v === S.version) return;
+  S.version = String(v);
+  document.querySelectorAll('.version').forEach((n) => { n.textContent = `v${S.version}`; });
+  document.querySelectorAll('.version-txt').forEach((n) => { n.textContent = S.version; });
+}
+
+// Si el service worker aún no ha contestado, se lee la versión publicada en sw.js.
+async function leerVersionPublicada() {
+  try {
+    const t = await (await fetch('sw.js', { cache: 'no-store' })).text();
+    const m = t.match(/const VERSION = '([^']+)'/);
+    if (m) ponerVersion(m[1]);
+  } catch { /* sin conexión: se queda como está */ }
 }
 
 // ---------- editor de eventos ----------
@@ -732,7 +770,7 @@ function registrarSW() {
     if (habiaControlador && !recargado) { recargado = true; location.reload(); }
   });
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data && e.data.version) { S.version = e.data.version; if (S.tab === 'mas' && S.espacio) render(); }
+    if (e.data && e.data.version) ponerVersion(e.data.version);
   });
   navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready)
     .then((r) => r.active && r.active.postMessage('version')).catch(() => { /* sin SW: la app funciona igual */ });
@@ -770,6 +808,12 @@ function iniciar() {
   leerErrorDeURL();
   aplicarTema();
   registrarSW();
+  leerVersionPublicada();
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault(); S.instalar = e;
+    if (S.tab === 'mas' && S.espacio && !document.querySelector('.modal-fondo')) render();
+  });
+  window.addEventListener('appinstalled', () => { S.instalar = null; if (S.tab === 'mas' && S.espacio) render(); });
   render();
   D.alCambiarSesion((evento, sesion) => {
     // No se llama a Supabase dentro de este aviso (podría bloquearse): se aplaza un instante.

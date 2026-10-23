@@ -220,6 +220,22 @@ with sync_playwright() as p:
     # la semana 9/11 debe equivaler a la semana 1 (26/10): el lunes 26/10 de Jorge tiene "Cena" editada → no cuenta; comparamos un día cualquiera de desayuno
     page.screenshot(path=f'{CAP}/12-menu-9nov.png', full_page=True)
 
+    print('13b) Versión visible e instalación')
+    ver = re.search(r"VERSION = '([^']+)'", open(os.path.join(RAIZ, 'sw.js'), encoding='utf-8').read()).group(1)
+    tab(page, 'Inicio'); page.wait_for_timeout(300)
+    comprobar(page.locator('.cab .version').inner_text() == 'v' + ver, 'recuadro de versión en la cabecera: ' + page.locator('.cab .version').inner_text())
+    tab(page, 'Más')
+    comprobar(page.locator('.version-txt').inner_text() == ver, 'versión también en Más')
+    page.get_by_role('button', name=re.compile('Instalar en este móvil')).click()
+    expect(page.locator('.modal')).to_contain_text('Instalar aplicación')
+    comprobar(True, 'sin evento del navegador, el botón muestra la ayuda manual')
+    page.get_by_role('button', name='Entendido').click()
+    page.evaluate("window.__pr = 0; const e = new Event('beforeinstallprompt'); e.prompt = async () => { window.__pr++; }; e.userChoice = Promise.resolve({outcome:'accepted'}); window.dispatchEvent(e)")
+    page.wait_for_timeout(300)
+    page.get_by_role('button', name=re.compile('Instalar en este móvil')).click()
+    page.wait_for_timeout(200)
+    comprobar(page.evaluate('window.__pr') == 1 and page.locator('.modal').count() == 0, 'con el evento del navegador, el botón lanza la instalación directamente')
+
     print('14) Inicio con el menú de hoy y tema oscuro')
     tab(page, 'Inicio')
     page.screenshot(path=f'{CAP}/13-inicio-hoy.png', full_page=True)
