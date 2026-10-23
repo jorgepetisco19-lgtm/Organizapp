@@ -358,6 +358,7 @@ with sync_playwright() as p:
     ev_db = lambda t: next(e for e in DB() if e['titulo'] == t)
     nuevo_evento('Deporte', 'Yoga', '2026-10-24', '17:00', '18:00', rep='semanal', hasta='2026-11-14', para='Paula')
     tab(page, 'Más'); page.get_by_label('Cómo se ve la agenda').select_option('columnas')
+    comprobar('Ajuste guardado' in page.locator('.aviso').inner_text(), 'al cambiar la vista de la agenda sale «Ajuste guardado»')
     tab(page, 'Inicio'); page.locator('.seg button', has_text='Mañana').click(); page.wait_for_timeout(300)
     rej = lambda: page.locator('.agenda-tl').last
     def agarrar(titulo, i=0, tactil=False):
@@ -416,17 +417,34 @@ with sync_playwright() as p:
     e = ev_db('Comida en familia')
     comprobar(e['compartido'] is True and e['hora_inicio'].startswith('14:30'), f"evento de los dos: sigue siendo de todos y baja media hora ({e['hora_inicio']})")
 
-    # 4) series: avisa de que cambia toda la serie y cuántas semanas
-    mensajes.clear(); ACEPTAR[0] = False
+    # 4) series: pregunta si se mueve solo ese día o toda la serie
+    yogas = lambda: [e for e in DB() if e['titulo'] == 'Yoga']
     pieza, x, y, _ = agarrar('Yoga')
     mover(x, y, 0, -72); soltar()
-    comprobar(len(mensajes) >= 1 and 'serie' in mensajes[0] and '4 semanas' in mensajes[0], f'aviso de serie: {mensajes[:1]}')
-    comprobar(ev_db('Yoga')['hora_inicio'].startswith('17:00'), 'si se cancela el aviso no se cambia nada')
-    mensajes.clear(); ACEPTAR[0] = True
+    modal = page.get_by_role('dialog')
+    comprobar(modal.count() == 1 and 'Solo el 24' in modal.inner_text() and '4 semanas' in modal.inner_text(), f"pregunta «solo este día / toda la serie»: {modal.inner_text()[:90]!r}")
+    page.get_by_role('button', name='Cancelar').click(); page.wait_for_timeout(300)
+    comprobar(len(yogas()) == 1 and yogas()[0]['hora_inicio'].startswith('17:00'), 'Cancelar: no cambia nada')
     pieza, x, y, _ = agarrar('Yoga')
     mover(x, y, 0, -72); soltar()
-    comprobar(ev_db('Yoga')['hora_inicio'].startswith('16:00') and ev_db('Yoga')['hora_fin'].startswith('17:00'), 'al aceptar se cambia la serie (16:00-17:00)')
-    ACEPTAR[0] = True
+    page.keyboard.press('Escape'); page.wait_for_timeout(300)
+    comprobar(len(yogas()) == 1 and yogas()[0]['hora_inicio'].startswith('17:00'), 'cerrar la pregunta con Escape tampoco cambia nada')
+    pieza, x, y, _ = agarrar('Yoga')
+    mover(x, y, 0, -72); soltar()
+    page.get_by_role('button', name=re.compile('^Toda la serie')).click(); page.wait_for_timeout(500)
+    comprobar(len(yogas()) == 1 and yogas()[0]['hora_inicio'].startswith('16:00') and yogas()[0]['hora_fin'].startswith('17:00'), 'Toda la serie: cambia la serie (16:00-17:00)')
+    comprobar(yogas()[0]['excepciones'] == [], 'y sin crear excepciones')
+    # solo este día (y de paso lo pasamos a la columna de Jorge, que Paula puede como pareja)
+    pieza, x, y, _ = agarrar('Yoga')
+    mover(x, y, -dir_paula * ancho_col, 36); soltar()
+    page.get_by_role('button', name=re.compile('^Solo el 24')).click(); page.wait_for_timeout(500)
+    ys = yogas()
+    serie = next(e for e in ys if e.get('repeticion')); suelto = next(e for e in ys if not e.get('repeticion'))
+    comprobar(len(ys) == 2 and '2026-10-24' in serie['excepciones'], 'Solo este día: la serie recibe una excepción ese día')
+    comprobar(serie['hora_inicio'].startswith('16:00') and serie['owner_id'].endswith('0b'), 'y el resto de la serie queda como estaba')
+    comprobar(suelto['fecha'] == '2026-10-24' and suelto['hora_inicio'].startswith('16:30') and suelto['owner_id'].endswith('0a') and suelto['tipo'] == 'deporte' and not suelto['compartido'],
+              f"y se crea un evento suelto ese día: {suelto['hora_inicio']} de Jorge")
+    comprobar(rej().locator('.tl-ev', has_text='Yoga').count() == 1, 'en la agenda de ese día sigue saliendo un solo Yoga')
 
     # 5) un clic normal sigue abriendo el editor
     rej().locator('.tl-ev', has_text='EF').first.click(); page.wait_for_timeout(200)
@@ -471,6 +489,62 @@ with sync_playwright() as p:
     if page.get_by_role('dialog').count(): page.get_by_label('Cerrar').click()  # como amigo se abre en solo lectura
     page.screenshot(path=f'{CAP}/13f-arrastrar.png', full_page=True)
     tab(page, 'Más'); page.get_by_label('Cómo se ve la agenda').select_option('lista')
+
+    print('13g) Amigos: código, solicitud, aceptar')
+    def cambiar_usuario(quien):
+        tab(page, 'Más'); page.get_by_role('button', name='Cerrar sesión').click()
+        expect(page.get_by_role('button', name='Entrar con Google')).to_be_visible()
+        entrar_como(page, quien)
+        page.get_by_role('button', name='Entrar con Google').click()
+    cambiar_usuario('tercero')
+    expect(page.get_by_role('button', name='Crear calendario')).to_be_visible()
+    page.get_by_role('button', name='Crear calendario').click()
+    expect(page.locator('nav.tabs')).to_be_visible()
+    tab(page, 'Más')
+    cod_t = page.locator('.codigo-amigo').inner_text().strip()
+    comprobar(re.fullmatch(r'[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}', cod_t) is not None, f'Tercero ve su código de amigo con formato XXXX-XXXX: {cod_t}')
+    comprobar('Todavía no tienes amigos' in page.locator('#amigos').inner_text(), 'sin amigos todavía')
+    page.get_by_role('button', name=re.compile('Cambiar')).click(); page.wait_for_timeout(300)
+    cod_t2 = page.locator('.codigo-amigo').inner_text().strip()
+    comprobar(cod_t2 != cod_t and re.fullmatch(r'[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}', cod_t2) is not None, f'«Cambiar» genera un código nuevo: {cod_t2}')
+    page.screenshot(path=f'{CAP}/13g-amigos-codigo.png', full_page=True)
+
+    cambiar_usuario('jorge')
+    expect(page.locator('nav.tabs')).to_be_visible()
+    tab(page, 'Más')
+    cod_j = page.locator('.codigo-amigo').inner_text().strip()
+    buscar = lambda c: (page.get_by_label('Código de amigo a buscar').fill(c), page.get_by_role('button', name='Buscar', exact=True).click(), page.wait_for_timeout(300))
+    buscar('abc')
+    comprobar('8 letras y números' in page.locator('.aviso').inner_text(), 'un código incompleto avisa del formato')
+    buscar('ZZZZ-ZZZZ')
+    comprobar('No hay nadie con ese código' in page.locator('#amigos').inner_text(), 'un código inexistente dice que no hay nadie')
+    buscar(cod_j)
+    comprobar('propio' in page.locator('.aviso').inner_text(), 'buscar tu propio código da error')
+    buscar(cod_t.lower())  # el antiguo ya no vale
+    comprobar('No hay nadie con ese código' in page.locator('#amigos').inner_text(), 'el código antiguo de Tercero ya no funciona')
+    buscar(cod_t2.lower().replace('-', ' '))
+    comprobar('Tercero' in page.locator('.amigo-resultado').inner_text(), 'con el código bueno (en minúsculas y con espacio) sale «Tercero»')
+    page.get_by_role('button', name='Enviar solicitud').click(); page.wait_for_timeout(400)
+    comprobar('Solicitud enviada' in page.locator('.aviso').inner_text() and 'Tercero · pendiente' in page.locator('#amigos').inner_text(), 'solicitud enviada y visible como pendiente')
+    buscar(cod_t2)
+    comprobar('ya le enviaste' in page.locator('.amigo-resultado').inner_text().lower(), 'volver a buscarlo dice que ya está enviada')
+
+    cambiar_usuario('tercero')
+    expect(page.locator('nav.tabs')).to_be_visible()
+    comprobar(page.locator('nav.tabs .punto-aviso').count() == 1, 'Tercero ve un punto rojo en «Más» por la solicitud')
+    tab(page, 'Más')
+    comprobar('Jorge' in page.locator('#amigos').inner_text() and page.get_by_role('button', name='Aceptar').count() == 1, 've la solicitud de Jorge con Aceptar/Rechazar')
+    page.screenshot(path=f'{CAP}/13g-amigos-solicitud.png', full_page=True)
+    page.get_by_role('button', name='Aceptar').click(); page.wait_for_timeout(400)
+    comprobar('Solicitudes recibidas' not in page.locator('#amigos').inner_text() and 'Jorge' in page.locator('#amigos').inner_text(), 'al aceptar, Jorge pasa a «Tus amigos»')
+    comprobar(page.locator('nav.tabs .punto-aviso').count() == 0, 'el punto rojo desaparece')
+    comprobar('Eventos' not in page.locator('#contenido').inner_text() and page.locator('.chip-capa').count() <= 1, 'ser amigo no muestra nada del calendario de Jorge')
+    page.get_by_role('button', name='Quitar').click(); page.wait_for_timeout(400)
+    comprobar('Todavía no tienes amigos' in page.locator('#amigos').inner_text(), 'quitar al amigo (con confirmación) lo saca de la lista')
+    cambiar_usuario('jorge')
+    expect(page.locator('nav.tabs')).to_be_visible()
+    tab(page, 'Más')
+    comprobar('Todavía no tienes amigos' in page.locator('#amigos').inner_text(), 'Jorge también deja de verlo como amigo')
 
     print('14) Inicio con el menú de hoy y tema oscuro')
     tab(page, 'Inicio')

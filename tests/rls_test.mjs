@@ -64,7 +64,7 @@ for (const u of Object.values(U)) await db.query('insert into auth.users(id,emai
 // ---------- 1. Sin sesión (anon) ----------
 console.log('\n1. Sin sesión');
 await como('anon');
-for (const t of ['perfiles', 'espacios', 'miembros', 'invitaciones', 'eventos', 'menu']) {
+for (const t of ['perfiles', 'espacios', 'miembros', 'invitaciones', 'eventos', 'menu', 'amistades']) {
   const r = await q(`select * from public.${t}`);
   ok(`anon no puede leer ${t}`, falla(r, 'permission denied'), r.error || JSON.stringify(r.rows));
 }
@@ -151,7 +151,7 @@ r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,cr
 ok('Tercero no puede poner eventos de la capa de Jorge en su calendario (Jorge no es miembro)', falla(r, 'row-level security'), r.error);
 r = await q(`select * from public.eventos`);
 ok('Con calendario propio, sigue sin ver eventos del de Jorge', !r.error && r.rows.length === 0);
-r = await q(`select * from public.perfiles where id=$1`, [U.jorge.id]);
+r = await q(`select id, nombre, color from public.perfiles where id=$1`, [U.jorge.id]);
 ok('Con calendario propio, sigue sin ver el perfil de Jorge', !r.error && r.rows.length === 0);
 
 // ---------- 4. Paula acepta ----------
@@ -285,6 +285,169 @@ r = await q(`update public.eventos set repeticion='semanal', repite_hasta='2026-
 ok('Se puede guardar una repetición semanal con excepciones', !r.error && r.rows.length === 1, r.error);
 r = await q(`update public.eventos set repite_hasta='2026-01-01' where id=$1`, [evJorge]);
 ok('"Repetir hasta" anterior a la fecha de inicio se rechaza', !!r.error);
+
+
+// ---------- 8. Amigos: código, solicitudes ----------
+console.log('\n8. Código de amigo y solicitudes de amistad');
+const ALFABETO = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
+await como('anon');
+for (const f of [`public.buscar_codigo('ABCD2345')`, `public.pedir_amistad('ABCD2345')`, `public.mis_amistades()`, `public.regenerar_codigo()`]) {
+  r = await q(`select * from ${f}`);
+  ok(`anon no puede usar ${f.split('(')[0]}`, falla(r, 'permission denied'), r.error);
+}
+await como(U.tercero);
+r = await q(`insert into public.amistades(de,para) values ($1,$2)`, [U.tercero.id, U.jorge.id]);
+ok('Nadie escribe en la tabla de amistades directamente', falla(r, 'permission denied'), r.error);
+r = await q(`select codigo_amigo from public.perfiles where id=$1`, [U.tercero.id]);
+ok('El código no se lee con un select (ni el propio)', falla(r, 'permission denied'), r.error || JSON.stringify(r.rows));
+r = await q(`select public.iniciar_perfil('Tercero') as p`);
+const codTercero = r.rows[0]?.p?.codigo_amigo ?? (typeof r.rows[0]?.p === 'string' ? r.rows[0].p.split(',').pop().replace(/[()"]/g, '') : null);
+ok('Cada persona recibe su código al iniciar perfil (8 caracteres sin letras confusas)', ALFABETO.test(codTercero || ''), JSON.stringify(r.rows[0]));
+await db.exec('reset role');
+const codigos = (await db.query('select id, codigo_amigo from public.perfiles')).rows;
+ok('Todos los perfiles tienen código y son distintos', codigos.every((c) => ALFABETO.test(c.codigo_amigo)) && new Set(codigos.map((c) => c.codigo_amigo)).size === codigos.length, JSON.stringify(codigos));
+const cod = (u) => codigos.find((c) => c.id === u.id).codigo_amigo;
+const codJorge = cod(U.jorge), codPaula = cod(U.paula), codAmigo = cod(U.amigo);
+
+await como(U.paula);
+r = await q(`select codigo_amigo from public.perfiles where id=$1`, [U.jorge.id]);
+ok('Ni siquiera quien comparte calendario puede leer el código de otro', falla(r, 'permission denied'), r.error);
+
+await como(U.tercero);
+r = await q(`select * from public.buscar_codigo($1)`, [codJorge.slice(0, 4).toLowerCase() + ' - ' + codJorge.slice(4).toLowerCase()]);
+ok('Buscar por código acepta minúsculas, espacios y guion', !r.error && r.rows.length === 1 && r.rows[0].nombre === 'Jorge' && r.rows[0].estado === 'nuevo', r.error || JSON.stringify(r.rows));
+ok('La búsqueda solo devuelve id, nombre y estado (nada de correo)', r.rows[0] && Object.keys(r.rows[0]).sort().join() === 'estado,id,nombre', JSON.stringify(r.rows[0]));
+r = await q(`select * from public.buscar_codigo('AAAAAAAA')`);
+ok('Un código que no existe no devuelve nada', !r.error && r.rows.length === 0, r.error);
+r = await q(`select * from public.buscar_codigo('Jorge')`);
+ok('Buscar por nombre NO funciona (solo código exacto)', !r.error && r.rows.length === 0, r.error);
+r = await q(`select * from public.buscar_codigo($1)`, [codJorge.slice(0, 7)]);
+ok('Un código incompleto no devuelve nada', !r.error && r.rows.length === 0, r.error);
+r = await q(`select * from public.buscar_codigo($1)`, [codTercero]);
+ok('Buscar tu propio código da error', falla(r, 'propio'), r.error);
+r = await q(`select public.pedir_amistad($1)`, [codTercero]);
+ok('No puedes pedirte amistad a ti mismo', falla(r, 'propio'), r.error);
+r = await q(`select public.pedir_amistad('ZZZZZZZZ')`);
+ok('Pedir amistad con un código inexistente da error', falla(r, 'nadie'), r.error);
+
+r = await q(`select public.pedir_amistad($1) as id`, [codJorge]);
+ok('Tercero envía solicitud a Jorge', !r.error && r.rows[0].id, r.error);
+const amis1 = r.rows[0]?.id;
+r = await q(`select public.pedir_amistad($1)`, [codJorge]);
+ok('No se puede enviar dos veces la misma solicitud', falla(r, 'Ya le enviaste'), r.error);
+r = await q(`select * from public.mis_amistades()`);
+ok('Tercero ve su solicitud como enviada (con el nombre de Jorge)', r.rows.length === 1 && r.rows[0].direccion === 'enviada' && r.rows[0].estado === 'pendiente' && r.rows[0].nombre === 'Jorge', JSON.stringify(r.rows));
+r = await q(`select * from public.buscar_codigo($1)`, [codJorge]);
+ok('La búsqueda dice que la solicitud ya está enviada', r.rows[0]?.estado === 'enviada', JSON.stringify(r.rows));
+r = await q(`select public.responder_amistad($1, true)`, [amis1]);
+ok('Quien envía no puede aceptar su propia solicitud', falla(r, 'ya no existe'), r.error);
+
+await como(U.amigo);
+r = await q(`select * from public.mis_amistades()`);
+ok('Un tercero no ve solicitudes ajenas', !r.error && r.rows.length === 0, r.error || r.rows.length);
+r = await q(`select public.responder_amistad($1, true)`, [amis1]);
+ok('Un tercero no puede aceptar solicitudes ajenas', falla(r, 'ya no existe'), r.error);
+await q(`select public.quitar_amistad($1)`, [amis1]);
+await db.exec('reset role');
+ok('Un tercero no puede quitar solicitudes ajenas', (await db.query('select count(*)::int n from public.amistades where id=$1', [amis1])).rows[0].n === 1);
+
+await como(U.jorge);
+r = await q(`select * from public.mis_amistades()`);
+ok('Jorge ve la solicitud recibida', r.rows.length === 1 && r.rows[0].direccion === 'recibida' && r.rows[0].nombre === 'Tercero', JSON.stringify(r.rows));
+r = await q(`select * from public.buscar_codigo($1)`, [codTercero]);
+ok('Y la búsqueda de Jorge dice "recibida"', r.rows[0]?.estado === 'recibida', JSON.stringify(r.rows));
+r = await q(`select public.responder_amistad($1, true)`, [amis1]);
+ok('Jorge acepta', !r.error, r.error);
+r = await q(`select * from public.mis_amistades()`);
+ok('Ahora son amigos', r.rows.length === 1 && r.rows[0].estado === 'aceptada', JSON.stringify(r.rows));
+r = await q(`select public.pedir_amistad($1)`, [codTercero]);
+ok('Pedir amistad a quien ya es amigo da error', falla(r, 'Ya sois amigos'), r.error);
+r = await q(`select public.responder_amistad($1, true)`, [amis1]);
+ok('No se puede responder dos veces', falla(r, 'ya no existe'), r.error);
+
+// ser amigo NO da acceso a los datos del calendario
+await como(U.tercero);
+for (const t of ['espacios', 'miembros', 'eventos', 'menu', 'invitaciones']) {
+  r = await q(`select * from public.${t}`);
+  ok(`Ser amigo no da acceso a ${t} del calendario de Jorge`, !r.error && r.rows.every((x) => (x.espacio_id ?? x.id) !== esp1), r.error || r.rows.length);
+}
+r = await q(`select id, nombre from public.perfiles`);
+ok('Ser amigo no deja ver su perfil (solo el tuyo)', !r.error && r.rows.length === 1 && r.rows[0].id === U.tercero.id, r.error || r.rows.length);
+
+// solicitudes cruzadas: si A pide a B y B ya había pedido a A, se aceptan
+await como(U.amigo);
+r = await q(`select public.pedir_amistad($1) as id`, [codPaula]);
+ok('Amigo envía solicitud a Paula', !r.error, r.error);
+await como(U.paula);
+r = await q(`select public.pedir_amistad($1) as id`, [codAmigo]);
+ok('Si Paula también le pide, se aceptan sin más', !r.error, r.error);
+r = await q(`select estado from public.mis_amistades()`);
+ok('Quedan como amigos (una sola fila)', r.rows.length === 1 && r.rows[0].estado === 'aceptada', JSON.stringify(r.rows));
+
+// rechazar y quitar
+await como(U.amigo);
+r = await q(`select public.pedir_amistad($1) as id`, [codJorge]);
+const amis2 = r.rows[0]?.id;
+await como(U.jorge);
+r = await q(`select public.responder_amistad($1, false)`, [amis2]);
+ok('Jorge rechaza y la solicitud desaparece', !r.error && (await q(`select * from public.mis_amistades()`)).rows.length === 1, r.error);
+await como(U.amigo);
+r = await q(`select public.pedir_amistad($1) as id`, [codJorge]);
+ok('Tras rechazar se puede volver a pedir', !r.error, r.error);
+const amis3 = r.rows[0]?.id;
+r = await q(`select public.quitar_amistad($1)`, [amis3]);
+r = await q(`select * from public.mis_amistades()`);
+ok('Quien envía puede cancelar su solicitud', r.rows.every((x) => x.id !== amis3), JSON.stringify(r.rows));
+await como(U.jorge);
+r = await q(`select public.quitar_amistad($1)`, [amis1]);
+r = await q(`select * from public.mis_amistades()`);
+ok('Cualquiera de los dos puede quitar la amistad', r.rows.length === 0, JSON.stringify(r.rows));
+
+// regenerar código
+await como(U.jorge);
+r = await q(`select public.regenerar_codigo() as c`);
+const nuevoJorge = r.rows[0]?.c;
+ok('Jorge genera un código nuevo', ALFABETO.test(nuevoJorge || '') && nuevoJorge !== codJorge, r.error || nuevoJorge);
+await como(U.tercero);
+r = await q(`select * from public.buscar_codigo($1)`, [codJorge]);
+ok('El código antiguo ya no encuentra a Jorge', !r.error && r.rows.length === 0, r.error);
+r = await q(`select * from public.buscar_codigo($1)`, [nuevoJorge]);
+ok('El nuevo sí', r.rows.length === 1, r.error);
+
+// límite de solicitudes pendientes
+await db.exec('reset role');
+const objetivos = [];
+for (let i = 1; i <= 21; i++) {
+  const id = `00000000-0000-0000-0000-0000000002${String(i).padStart(2, '0')}`;
+  await db.query('insert into auth.users(id,email) values ($1,$2)', [id, `lim${i}@test.com`]);
+  await db.query(`insert into public.perfiles(id,nombre) values ($1,$2)`, [id, `Lim ${i}`]);
+  objetivos.push((await db.query('select codigo_amigo c from public.perfiles where id=$1', [id])).rows[0].c);
+}
+await como(U.tercero);
+let ultimo;
+for (let i = 0; i < 21; i++) ultimo = await q(`select public.pedir_amistad($1)`, [objetivos[i]]);
+ok('Más de 20 solicitudes pendientes seguidas se rechazan', falla(ultimo, 'demasiadas'), ultimo.error);
+
+// borrar la cuenta limpia las amistades
+await db.exec('reset role');
+await db.query('delete from auth.users where id=$1', ['00000000-0000-0000-0000-000000000201']);
+ok('Si se borra una cuenta desaparecen sus amistades', (await db.query(`select count(*)::int n from public.amistades where para='00000000-0000-0000-0000-000000000201' or de='00000000-0000-0000-0000-000000000201'`)).rows[0].n === 0);
+
+// ---------- 9. Migración 03 sobre una base antigua ----------
+console.log('\n9. Migración 03 sobre una base que ya tenía perfiles');
+const viejo = new PGlite();
+await viejo.exec(shim);
+await viejo.exec(`create table public.perfiles (id uuid primary key references auth.users(id) on delete cascade, nombre text not null, color text not null default '#3b82f6', creado timestamptz not null default now());
+  insert into auth.users values ('00000000-0000-0000-0000-000000000001','a@x.com'),('00000000-0000-0000-0000-000000000002','b@x.com');
+  insert into public.perfiles(id,nombre) values ('00000000-0000-0000-0000-000000000001','A'),('00000000-0000-0000-0000-000000000002','B');
+  alter table public.perfiles enable row level security;
+  grant select on public.perfiles to authenticated;`);
+const mig = fs.readFileSync(process.env.SQL3_PATH || '/mnt/user-data/outputs/organizapp/sql/03_amigos.sql', 'utf8');
+let errMig = null;
+try { await viejo.exec(mig); await viejo.exec(mig); } catch (e) { errMig = e.message; }
+ok('La migración se aplica dos veces sin errores', !errMig, errMig);
+const cs = (await viejo.query('select codigo_amigo from public.perfiles')).rows.map((x) => x.codigo_amigo);
+ok('Las personas que ya existían reciben código, distinto cada una', cs.length === 2 && cs.every((c) => ALFABETO.test(c)) && cs[0] !== cs[1], JSON.stringify(cs));
 
 // ---------- Resumen ----------
 await db.exec('reset role');

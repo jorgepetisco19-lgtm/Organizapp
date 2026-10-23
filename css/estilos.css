@@ -242,3 +242,13 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .fila-evento.tl-ev.arrastrando { z-index: 20; box-shadow: 0 8px 22px rgba(0,0,0,.35); transition: none; opacity: .97; }
 body.arrastrando .tl-ev:not(.arrastrando) { opacity: .55; }
 body.arrastrando { overscroll-behavior: contain; }
+
+/* ---- amigos ---- */
+.codigo-amigo { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.9rem; font-weight: 700; letter-spacing: .12em; text-align: center; padding: .55rem .5rem; margin: .2rem 0 .4rem; border-radius: 12px; background: color-mix(in srgb, var(--acento) 10%, transparent); user-select: all; -webkit-user-select: all; }
+.entrada-codigo { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.separador { height: 1px; background: color-mix(in srgb, var(--suave) 25%, transparent); margin: .9rem 0 .7rem; }
+.amigo-resultado { margin-top: .5rem; }
+.amigo-fila { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
+.amigo-resultado .amigo-fila { padding: .5rem .6rem; border-radius: 10px; background: color-mix(in srgb, var(--suave) 12%, transparent); }
+.tabs .ico { position: relative; display: inline-block; }
+.punto-aviso { position: absolute; top: -2px; right: -8px; width: 10px; height: 10px; border-radius: 50%; background: #ef4444; border: 2px solid var(--superficie); box-sizing: content-box; }

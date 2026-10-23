@@ -50,13 +50,14 @@ async function conCarga(boton, fn) {
   try { await fn(); } catch (e) { aviso(e.message || String(e), true); } finally { if (boton) boton.disabled = false; }
 }
 
-function modal(titulo, cuerpo) {
+function modal(titulo, cuerpo, alCerrar) {
   const fondo = el('div', { class: 'modal-fondo', onclick: (e) => { if (e.target === fondo) cerrar(); } });
   const alTecla = (e) => { if (e.key === 'Escape') cerrar(); };
   function cerrar() {
     document.removeEventListener('keydown', alTecla);
     fondo.remove();
     document.body.classList.toggle('sin-scroll', $('#modales').children.length > 0);
+    if (alCerrar) { const f = alCerrar; alCerrar = null; f(); }
   }
   fondo.append(el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': titulo },
     el('div', { class: 'modal-cab' },
@@ -74,7 +75,7 @@ const hoyInicial = hoyISO();
 const S = {
   cargando: true, error: null, errorLogin: null,
   user: null, perfil: null, espacio: null, relacion: null,
-  miembros: [], enviadas: [], invitaciones: [],
+  miembros: [], enviadas: [], invitaciones: [], amistades: null,
   tab: 'inicio', inicioDia: 'manana',
   capas: new Set(), tipos: new Set(leerLocal('tipos', TIPOS.map((t) => t.id))),
   tiposInicio: new Set(leerLocal('tipos_inicio', TIPOS.map((t) => t.id))),
@@ -147,7 +148,7 @@ async function cargarTodo() {
   render();
   try {
     const c = await D.cargarContexto(S.user);
-    Object.assign(S, { perfil: c.perfil, espacio: c.espacio, relacion: c.relacion, miembros: c.miembros, enviadas: c.enviadas, invitaciones: c.invitaciones });
+    Object.assign(S, { perfil: c.perfil, espacio: c.espacio, relacion: c.relacion, miembros: c.miembros, enviadas: c.enviadas, invitaciones: c.invitaciones, amistades: c.amistades });
     const guardadas = leerLocal('capas', null);
     const ids = new Set(S.miembros.map((m) => m.id));
     const validas = Array.isArray(guardadas) ? guardadas.filter((i) => ids.has(i)) : [];
@@ -163,7 +164,7 @@ async function cargarTodo() {
 }
 
 function reiniciarSesionLocal() {
-  Object.assign(S, { user: null, perfil: null, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones: [], eventos: [], menu: [], menuMap: new Map(), rango: null, tab: 'inicio' });
+  Object.assign(S, { user: null, perfil: null, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones: [], amistades: null, eventos: [], menu: [], menuMap: new Map(), rango: null, tab: 'inicio' });
 }
 
 async function alSesion(sesion) {
@@ -248,8 +249,8 @@ function marco() {
       S.tab === 'mas' ? null : capasChips()),
     el('main', { id: 'contenido', class: 'contenido' }, S.cargandoDatos ? el('p', { class: 'vacio' }, 'Cargando…') : vistaActual()),
     el('nav', { class: 'tabs', 'aria-label': 'Secciones' },
-      TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; cargarVista(); } },
-        el('span', { class: 'ico' }, ico), el('span', {}, nom)))),
+      TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; if (id === 'mas') recargarAmistades(); cargarVista(); } },
+        el('span', { class: 'ico' }, ico, id === 'mas' && solicitudesRecibidas().length ? el('span', { class: 'punto-aviso', role: 'status', 'aria-label': 'Tienes solicitudes de amistad' }) : null), el('span', {}, nom)))),
     (S.tab === 'inicio' || S.tab === 'calendario') && !S.cargandoDatos
       ? el('button', { class: 'fab', 'aria-label': 'Añadir evento', onclick: () => abrirEditorEvento({ fecha: fechaFab }) }, '＋') : null);
 }
@@ -446,16 +447,33 @@ function lineaDeTiempo(conHora, cols) {
       const campos = {};
       if (cambioHora) { campos.hora_inicio = fmtMin(st.min); campos.hora_fin = ev.hora_fin ? fmtMin(st.min + durReal) : null; }
       if (cambioDueno) campos.owner_id = nuevoDueno;
-      if (ev.repeticion) {
-        const semanas = ev.repite_hasta ? Math.floor(diffDias(ev.repite_hasta, ev.fecha) / 7) + 1 : null;
-        const alcance = semanas ? `toda la serie (${semanas} semanas, hasta el ${fechaCorta(ev.repite_hasta)})` : 'toda la serie (todas las semanas)';
-        if (!confirm(`«${ev.titulo}» se repite cada semana: el cambio se aplicará a ${alcance}.\n¿Aplicar?`)) { cargarVista(true); return; }
-      }
-      conCarga(null, async () => {
-        await D.guardarEvento(ev.id, campos);
-        aviso(cambioDueno ? `Pasado a ${cols[st.col].nombre}${cambioHora ? ` a las ${fmtMin(st.min)}` : ''}` : `Movido a las ${fmtMin(st.min)}`);
+      const nombreDestino = cols[st.col].nombre;
+      const mensaje = cambioDueno ? `Pasado a ${nombreDestino}${cambioHora ? ` a las ${fmtMin(st.min)}` : ''}` : `Movido a las ${fmtMin(st.min)}`;
+      const fechaOcurr = g.x.fecha;
+      const aplicar = (alcance) => conCarga(null, async () => {
+        if (alcance === 'uno') {
+          // este día solo: se quita de la serie y se crea un evento suelto con el cambio
+          await D.guardarEvento(ev.id, { excepciones: [...new Set([...(ev.excepciones || []), fechaOcurr])] });
+          await D.crearEventos([{
+            espacio_id: ev.espacio_id, owner_id: nuevoDueno, tipo: ev.tipo, titulo: ev.titulo, fecha: fechaOcurr,
+            hora_inicio: campos.hora_inicio ?? ev.hora_inicio ?? null, hora_fin: 'hora_fin' in campos ? campos.hora_fin : (ev.hora_fin ?? null),
+            notas: ev.notas ?? null, compartido: !!ev.compartido, creado_por: S.user.id,
+          }]);
+        } else await D.guardarEvento(ev.id, campos);
+        aviso(mensaje);
         await cargarVista(true);
       });
+      if (!ev.repeticion) { aplicar('serie'); return; }
+      const semanas = ev.repite_hasta ? Math.floor(diffDias(ev.repite_hasta, ev.fecha) / 7) + 1 : null;
+      let elegido = false;
+      const cerrarPregunta = modal('Evento que se repite', el('div', { class: 'formulario' },
+        el('p', {}, `«${ev.titulo}» se repite cada semana. ¿Qué quieres mover?`),
+        el('div', { class: 'fila-botones columna' },
+          el('button', { type: 'button', class: 'primario', onclick: () => { elegido = true; cerrarPregunta(); aplicar('uno'); } }, `Solo el ${fechaCorta(fechaOcurr)}`),
+          el('button', { type: 'button', onclick: () => { elegido = true; cerrarPregunta(); aplicar('serie'); } },
+            semanas ? `Toda la serie (${semanas} semanas, hasta el ${fechaCorta(ev.repite_hasta)})` : 'Toda la serie (todas las semanas)'),
+          el('button', { type: 'button', onclick: () => cerrarPregunta() }, 'Cancelar'))),
+        () => { if (!elegido) cargarVista(true); });
     };
 
     b.addEventListener('pointerdown', (e) => {
@@ -708,6 +726,92 @@ function vistaMenu() {
 }
 
 // ---------- vista: Más ----------
+// ---------- amigos ----------
+const solicitudesRecibidas = () => (S.amistades || []).filter((a) => a.estado === 'pendiente' && a.direccion === 'recibida');
+const verCodigo = (c) => (c ? `${c.slice(0, 4)}-${c.slice(4)}` : '');
+
+async function recargarAmistades(pintar = true) {
+  if (!S.user || !S.espacio || S.amistades === null) return; // sin sesión, o la base aún no tiene el cambio 3
+  try {
+    const nuevas = await D.misAmistades();
+    const cambio = JSON.stringify(nuevas) !== JSON.stringify(S.amistades);
+    S.amistades = nuevas;
+    if (cambio && pintar && !document.querySelector('#modales .modal')) render();
+  } catch { /* sin conexión: se queda lo que había */ }
+}
+
+function tarjetaAmigos() {
+  if (S.amistades === null) return null;
+  const codigo = S.perfil?.codigo_amigo || '';
+  const codigoIn = el('input', { type: 'text', placeholder: 'XXXX-XXXX', autocomplete: 'off', autocapitalize: 'characters', maxLength: 12, 'aria-label': 'Código de amigo a buscar', class: 'entrada-codigo' });
+  const resultado = el('div', { class: 'amigo-resultado', 'aria-live': 'polite' });
+  const refrescar = async () => { S.amistades = await D.misAmistades(); render(); };
+
+  const mostrar = (r) => {
+    resultado.replaceChildren();
+    if (!r) { resultado.append(el('p', { class: 'suave' }, 'No hay nadie con ese código. Revisa que esté bien escrito.')); return; }
+    const caja = (...hijos) => resultado.append(el('div', { class: 'amigo-fila' }, ...hijos));
+    if (r.estado === 'amigos') caja(el('span', {}, `${r.nombre}: ya sois amigos`));
+    else if (r.estado === 'enviada') caja(el('span', {}, `${r.nombre}: ya le enviaste una solicitud`));
+    else caja(el('span', {}, r.estado === 'recibida' ? `${r.nombre} ya te había enviado una solicitud` : r.nombre),
+      el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+        await D.pedirAmistad(codigoIn.value);
+        aviso(r.estado === 'recibida' ? 'Ya sois amigos' : 'Solicitud enviada');
+        await refrescar();
+      }) }, r.estado === 'recibida' ? 'Aceptar' : 'Enviar solicitud'));
+  };
+
+  const recibidas = solicitudesRecibidas();
+  const enviadas = (S.amistades || []).filter((a) => a.estado === 'pendiente' && a.direccion === 'enviada');
+  const amigos = (S.amistades || []).filter((a) => a.estado === 'aceptada');
+  const accion = (texto, fn, clase = 'enlace') => el('button', { class: clase, onclick: (e) => conCarga(e.currentTarget, async () => { await fn(); await refrescar(); }) }, texto);
+
+  return el('section', { class: 'tarjeta', id: 'amigos' },
+    el('h2', {}, 'Amigos'),
+    el('span', { class: 'etq' }, 'Tu código de amigo'),
+    el('div', { class: 'codigo-amigo', 'aria-label': `Tu código de amigo es ${verCodigo(codigo)}` }, verCodigo(codigo)),
+    el('p', { class: 'suave' }, 'Dáselo a quien quieras que te encuentre. Con él pueden pedirte amistad y ver tu nombre; nada más. Tú decides si aceptas.'),
+    el('div', { class: 'fila-botones' },
+      el('button', { onclick: async () => {
+        try { await navigator.clipboard.writeText(verCodigo(codigo)); aviso('Código copiado'); } catch { aviso('No se pudo copiar.', true); }
+      } }, '📋 Copiar'),
+      el('button', { onclick: async () => {
+        const texto = `Mi código de amigo en Organizapp: ${verCodigo(codigo)}\n${location.origin + location.pathname}`;
+        try { if (navigator.share) await navigator.share({ text: texto }); else { await navigator.clipboard.writeText(texto); aviso('Mensaje copiado'); } } catch { /* cancelado */ }
+      } }, '🔗 Compartir'),
+      el('button', { onclick: (e) => {
+        if (!confirm('Tu código actual dejará de funcionar y se creará otro. Tus amigos actuales no cambian. ¿Cambiarlo?')) return;
+        conCarga(e.currentTarget, async () => { S.perfil = { ...S.perfil, codigo_amigo: await D.regenerarCodigo() }; aviso('Código nuevo creado'); render(); });
+      } }, '♻️ Cambiar')),
+    el('div', { class: 'separador' }),
+    el('label', {}, 'Añadir un amigo con su código', codigoIn),
+    el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
+      const c = codigoIn.value.replace(/[^A-Za-z0-9]/g, '');
+      if (c.length !== 8) throw new Error('El código tiene 8 letras y números (XXXX-XXXX).');
+      mostrar((await D.buscarCodigo(c))[0] || null);
+    }) }, 'Buscar'),
+    resultado,
+    recibidas.length ? el('div', {},
+      el('span', { class: 'etq' }, 'Solicitudes recibidas'),
+      el('ul', { class: 'personas' }, recibidas.map((a) => el('li', { class: 'amigo-fila' },
+        el('span', {}, a.nombre),
+        el('span', { class: 'fila-botones' },
+          accion('Aceptar', () => D.responderAmistad(a.id, true), 'primario'),
+          accion('Rechazar', () => D.responderAmistad(a.id, false))))))) : null,
+    enviadas.length ? el('div', {},
+      el('span', { class: 'etq' }, 'Solicitudes enviadas'),
+      el('ul', { class: 'personas' }, enviadas.map((a) => el('li', { class: 'amigo-fila' },
+        el('span', {}, `${a.nombre} · pendiente`), accion('Cancelar', () => D.quitarAmistad(a.id)))))) : null,
+    el('div', {},
+      el('span', { class: 'etq' }, 'Tus amigos'),
+      amigos.length
+        ? el('ul', { class: 'personas' }, amigos.map((a) => el('li', { class: 'amigo-fila' },
+          el('span', {}, a.nombre),
+          accion('Quitar', async () => { if (confirm(`¿Quitar a ${a.nombre} de tus amigos?`)) await D.quitarAmistad(a.id); }))))
+        : el('p', { class: 'suave' }, 'Todavía no tienes amigos añadidos.'),
+      el('p', { class: 'suave' }, 'Más adelante podrás compartir calendarios con ellos.')));
+}
+
 function vistaMas() {
   const nombreIn = el('input', { type: 'text', maxLength: 60, value: S.perfil?.nombre || '', 'aria-label': 'Tu nombre' });
   let colorSel = (miembro(S.user.id) || S.perfil || {}).color || PALETA[0];
@@ -716,10 +820,10 @@ function vistaMas() {
     onclick: () => { colorSel = c; swatches.forEach((b, i) => b.setAttribute('aria-pressed', String(PALETA[i] === colorSel))); },
   }));
   const emailIn = el('input', { type: 'email', placeholder: 'correo de Google de tu pareja', autocomplete: 'off', 'aria-label': 'Correo a invitar' });
-  const temaSel = el('select', { 'aria-label': 'Aspecto', onchange: () => { guardarLocal('tema', temaSel.value); aplicarTema(); } },
+  const temaSel = el('select', { 'aria-label': 'Aspecto', onchange: () => { guardarLocal('tema', temaSel.value); aplicarTema(); aviso('Ajuste guardado'); } },
     [['auto', 'Automático (como tu móvil)'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([v, n]) => el('option', { value: v, selected: leerLocal('tema', 'auto') === v }, n)));
 
-  const vistaSel = el('select', { 'aria-label': 'Cómo se ve la agenda', onchange: () => { S.vista = vistaSel.value; guardarLocal('vista', S.vista); } },
+  const vistaSel = el('select', { 'aria-label': 'Cómo se ve la agenda', onchange: () => { S.vista = vistaSel.value; guardarLocal('vista', S.vista); aviso('Ajuste guardado'); } },
     [['lista', 'Lista (una sola columna)'], ['columnas', 'Una columna por persona']].map(([v, n]) => el('option', { value: v, selected: S.vista === v }, n)));
 
   return el('div', { class: 'mas' },
@@ -757,6 +861,7 @@ function vistaMas() {
             i.email, ' ',
             el('button', { class: 'enlace', onclick: (e) => conCarga(e.currentTarget, async () => { await D.borrarInvitacion(i.id); await cargarTodo(); }) }, 'Quitar'))))) : null,
       ] : null),
+    tarjetaAmigos(),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
       el('p', { class: 'suave' }, 'Importa comidas desde un Excel. Descarga la plantilla, rellénala y súbela.'),
@@ -1157,7 +1262,7 @@ function iniciar() {
   let oculta = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) oculta = Date.now();
-    else if (S.espacio && Date.now() - oculta > 30000) cargarVista(true);
+    else if (S.espacio && Date.now() - oculta > 30000) { cargarVista(true); recargarAmistades(); }
   });
 }
 

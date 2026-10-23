@@ -8,11 +8,14 @@ var supabase = (function () {
     paula: { id: '00000000-0000-0000-0000-00000000000b', email: 'paula@test.com', user_metadata: { full_name: 'Paula Gómez' } },
     tercero: { id: '00000000-0000-0000-0000-00000000000c', email: 'tercero@test.com', user_metadata: { full_name: 'Tercero' } },
   };
-  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [] });
+  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [] });
   const cargar = () => { try { return JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); } catch { return vacia(); } };
   const guardar = (db) => localStorage.setItem(CLAVE_DB, JSON.stringify(db));
   const sesionActual = () => { const k = localStorage.getItem(CLAVE_SES); return k ? USUARIOS[k] : null; };
   const uuid = () => crypto.randomUUID();
+  const ALFA = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+  const codigoNuevo = () => Array.from({ length: 8 }, () => ALFA[Math.floor(Math.random() * ALFA.length)]).join('');
+  const norm = (t) => String(t || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
   const hora = (v) => (typeof v === 'string' && /^\d\d:\d\d$/.test(v) ? v + ':00' : v);
   const PALETA = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#ef4444', '#eab308', '#06b6d4', '#ec4899'];
   const oyentes = [];
@@ -89,7 +92,7 @@ var supabase = (function () {
     iniciar_perfil({ p_nombre }) {
       const u = sesionActual(); const db = cargar();
       let p = db.perfiles.find((x) => x.id === u.id);
-      if (!p) { p = { id: u.id, nombre: p_nombre, color: '#3b82f6', creado: new Date().toISOString() }; db.perfiles.push(p); guardar(db); }
+      if (!p) { p = { id: u.id, nombre: p_nombre, color: '#3b82f6', creado: new Date().toISOString(), codigo_amigo: codigoNuevo() }; db.perfiles.push(p); guardar(db); }
       return { data: p, error: null };
     },
     crear_espacio({ p_nombre }) {
@@ -118,6 +121,56 @@ var supabase = (function () {
       if (usados.includes(mios.color)) mios.color = PALETA.find((c) => !usados.includes(c));
       guardar(db);
       return { data: inv.espacio_id, error: null };
+    },
+    // --- amigos (réplica simple de las funciones de Postgres; las reglas reales se prueban en rls_test.mjs) ---
+    buscar_codigo({ p_codigo }) {
+      const u = sesionActual(); const db = cargar(); db.amistades = db.amistades || [];
+      const c = norm(p_codigo);
+      if (c.length !== 8) return { data: [], error: null };
+      const otro = db.perfiles.find((p) => p.codigo_amigo === c);
+      if (!otro) return { data: [], error: null };
+      if (otro.id === u.id) return err('Ese es tu propio código.');
+      const a = db.amistades.find((x) => (x.de === u.id && x.para === otro.id) || (x.de === otro.id && x.para === u.id));
+      const estado = !a ? 'nuevo' : a.estado === 'aceptada' ? 'amigos' : a.de === u.id ? 'enviada' : 'recibida';
+      return { data: [{ id: otro.id, nombre: otro.nombre, estado }], error: null };
+    },
+    pedir_amistad({ p_codigo }) {
+      const u = sesionActual(); const db = cargar(); db.amistades = db.amistades || [];
+      const otro = db.perfiles.find((p) => p.codigo_amigo === norm(p_codigo));
+      if (!otro) return err('No hay nadie con ese código.');
+      if (otro.id === u.id) return err('Ese es tu propio código.');
+      const a = db.amistades.find((x) => (x.de === u.id && x.para === otro.id) || (x.de === otro.id && x.para === u.id));
+      if (a) {
+        if (a.estado === 'aceptada') return err('Ya sois amigos.');
+        if (a.de === u.id) return err('Ya le enviaste una solicitud.');
+        a.estado = 'aceptada'; guardar(db); return { data: a.id, error: null };
+      }
+      const n = { id: uuid(), de: u.id, para: otro.id, estado: 'pendiente', creada: new Date().toISOString() };
+      db.amistades.push(n); guardar(db); return { data: n.id, error: null };
+    },
+    responder_amistad({ p_id, p_aceptar }) {
+      const u = sesionActual(); const db = cargar();
+      const a = (db.amistades || []).find((x) => x.id === p_id && x.para === u.id && x.estado === 'pendiente');
+      if (!a) return err('Esa solicitud ya no existe.');
+      if (p_aceptar) a.estado = 'aceptada'; else db.amistades = db.amistades.filter((x) => x.id !== p_id);
+      guardar(db); return { data: null, error: null };
+    },
+    quitar_amistad({ p_id }) {
+      const u = sesionActual(); const db = cargar();
+      db.amistades = (db.amistades || []).filter((x) => !(x.id === p_id && (x.de === u.id || x.para === u.id)));
+      guardar(db); return { data: null, error: null };
+    },
+    mis_amistades() {
+      const u = sesionActual(); const db = cargar();
+      return { data: (db.amistades || []).filter((x) => x.de === u.id || x.para === u.id).map((x) => {
+        const otroId = x.de === u.id ? x.para : x.de;
+        return { id: x.id, otro_id: otroId, nombre: db.perfiles.find((p) => p.id === otroId).nombre, estado: x.estado, direccion: x.de === u.id ? 'enviada' : 'recibida', creada: x.creada };
+      }), error: null };
+    },
+    regenerar_codigo() {
+      const u = sesionActual(); const db = cargar();
+      const p = db.perfiles.find((x) => x.id === u.id); p.codigo_amigo = codigoNuevo(); guardar(db);
+      return { data: p.codigo_amigo, error: null };
     },
     rechazar_invitacion({ p_id }) {
       const u = sesionActual(); const db = cargar();

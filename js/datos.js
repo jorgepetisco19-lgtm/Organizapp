@@ -36,7 +36,8 @@ export async function cargarContexto(user) {
   const perfil = ok(await sb.rpc('iniciar_perfil', { p_nombre: nombre }));
   const mias = ok(await sb.from('miembros').select('espacio_id, relacion').eq('user_id', user.id));
   const invitaciones = ok(await sb.rpc('mis_invitaciones'));
-  if (!mias.length) return { perfil, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones };
+  const amistades = await misAmistades().catch(() => null); // null = la base aún no tiene el cambio 3 (la app sigue funcionando)
+  if (!mias.length) return { perfil, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones, amistades };
 
   const mia = mias[0]; // primera versión: un solo calendario por persona
   const espacio = ok(await sb.from('espacios').select('id, nombre').eq('id', mia.espacio_id).single());
@@ -48,8 +49,16 @@ export async function cargarContexto(user) {
   const enviadas = mia.relacion === 'pareja'
     ? ok(await sb.from('invitaciones').select('id, email, relacion, creada').eq('espacio_id', espacio.id).order('creada'))
     : [];
-  return { perfil, espacio, relacion: mia.relacion, miembros, enviadas, invitaciones };
+  return { perfil, espacio, relacion: mia.relacion, miembros, enviadas, invitaciones, amistades };
 }
+
+// ---------- amigos ----------
+export const misAmistades = async () => ok(await sb.rpc('mis_amistades'));
+export const buscarCodigo = async (codigo) => ok(await sb.rpc('buscar_codigo', { p_codigo: codigo }));
+export const pedirAmistad = async (codigo) => ok(await sb.rpc('pedir_amistad', { p_codigo: codigo }));
+export const responderAmistad = async (id, aceptar) => ok(await sb.rpc('responder_amistad', { p_id: id, p_aceptar: aceptar }));
+export const quitarAmistad = async (id) => ok(await sb.rpc('quitar_amistad', { p_id: id }));
+export const regenerarCodigo = async () => ok(await sb.rpc('regenerar_codigo'));
 
 export const crearEspacio = async (nombre) => ok(await sb.rpc('crear_espacio', { p_nombre: nombre }));
 export const aceptarInvitacion = async (id) => ok(await sb.rpc('aceptar_invitacion', { p_id: id }));
