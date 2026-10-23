@@ -81,7 +81,7 @@ test('el plan se pone en fechas: comidas agrupadas, horas distintas y tareas del
   assert.equal(p.filas.find((f) => f.fecha === '2026-11-15').persona, 'Paula');
   // tareas: una por día con trabajo previo, el día anterior, sin repetir platos
   assert.deepEqual(p.tareas.map((t) => [t.fecha, t.hora]), [['2026-11-01', '21:30'], ['2026-11-10', '21:30']]);
-  assert.equal(p.tareas[0].titulo, 'Preparar para mañana: Avena con leche, Overnight oats, Lentejas');
+  assert.equal(p.tareas[0].titulo, 'Preparar para mañana (3 platos)');
   assert.match(p.tareas[0].notas, /Comida: Lentejas \(Jorge, Paula\)/);
   assert.equal(p.tareas[1].titulo, 'Preparar para mañana: Pollo asado');
   assert.match(p.tareas[1].notas, /Comida: Pollo asado \(Paula\)/);
@@ -131,5 +131,5 @@ print(wb.sheetnames, ws.max_row, [str(d.sqref) for d in ws.data_validations.data
   assert.deepEqual(r.plan.semanas, [1, 2]);
   const p = planAFechas(r.plan, '2026-11-02', [1, 2], { hoy: '2026-10-23' });
   assert.equal(p.tareas.length, 1);
-  assert.equal(p.tareas[0].titulo, 'Preparar para mañana: Overnight oats, Lentejas');
+  assert.equal(p.tareas[0].titulo, 'Preparar para mañana (2 platos)');
 });

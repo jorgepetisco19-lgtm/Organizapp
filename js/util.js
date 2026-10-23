@@ -355,8 +355,8 @@ export function planAFechas(plan, lunes, semanas, { personas = null, horaTarea =
     const dia = sumarDias(fecha, -1);
     if (hoy && dia < hoy) { omitidas++; continue; }
     const nombres = [...new Set(lista.map((f) => f.plato))];
-    let titulo = `${PREFIJO_PREPARAR}: ${nombres.join(', ')}`;
-    if (titulo.length > 118) titulo = titulo.slice(0, 117).trimEnd() + '…';
+    // título corto (cabe en cualquier vista); la lista completa de platos va en las notas
+    const titulo = nombres.length === 1 ? `${PREFIJO_PREPARAR}: ${nombres[0]}`.slice(0, 120) : `${PREFIJO_PREPARAR} (${nombres.length} platos)`;
     const porPlato = new Map();
     for (const f of lista) {
       const k = `${f.franja}|${f.plato}`;

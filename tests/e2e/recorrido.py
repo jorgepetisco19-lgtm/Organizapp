@@ -770,7 +770,7 @@ with sync_playwright() as p:
     prep = sorted([(e['fecha'], e['hora_inicio'][:5], e['compartido'], e['tipo']) for e in db['eventos'] if e['titulo'].startswith('Preparar para mañana')])
     comprobar(prep == [('2027-01-03', '20:30', True, 'tarea'), ('2027-01-13', '20:30', True, 'tarea')], f'tareas creadas el día anterior a las 20:30 y «de todos»: {prep}')
     tp = [e for e in db['eventos'] if e['fecha'] == '2027-01-03' and e['titulo'].startswith('Preparar')][0]
-    comprobar(tp['titulo'] == 'Preparar para mañana: Avena proteica, Crema de puerro' and 'Comida: Crema de puerro (Jorge, Paula)' in tp['notas'], f'título y notas: {tp["titulo"]}')
+    comprobar(tp['titulo'] == 'Preparar para mañana (2 platos)' and 'Comida: Crema de puerro (Jorge, Paula)' in tp['notas'], f'título y notas: {tp["titulo"]}')
     mn = {(m['fecha'], m['franja'], m['owner_id']): m['texto'] for m in db['menu'] if m['fecha'].startswith('2027')}
     comprobar(len(mn) == 5 and any(v == 'Avena proteica · 2/3 ración' for v in mn.values()) and any(v == 'Lentejas · 500 g' for v in mn.values()), f'menú guardado con cantidades: {sorted(mn.values())}')
     comprobar('4' in page.locator('.barra-nav').inner_text() and 'ene' in page.locator('.barra-nav').inner_text().lower(), 'la vista salta a la semana del 4 de enero: ' + page.locator('.barra-nav').inner_text().replace('\n', ' '))
