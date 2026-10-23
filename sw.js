@@ -1,12 +1,12 @@
 // Organizapp · service worker.
 // IMPORTANTE: sube este número en CADA despliegue. Así los móviles descargan la versión nueva.
-const VERSION = '5';
+const VERSION = '6';
 
 const CACHE = `organizapp-v${VERSION}`;
 const ARCHIVOS = [
   './', 'index.html', 'privacidad.html', 'terminos.html', 'manifest.webmanifest',
   'css/estilos.css', 'js/app.js', 'js/datos.js', 'js/util.js', 'js/config.js', 'js/supabase.min.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/logo-cabecera.png',
 ].map((a) => new URL(a, self.registration.scope).href);
 
 self.addEventListener('install', (e) => {

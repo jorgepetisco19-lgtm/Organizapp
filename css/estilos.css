@@ -189,4 +189,6 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .pagina-legal h2 { margin-top: 20px; }
 
 /* Versión de la app: recuadro pequeño en la cabecera */
-.version { margin-left: auto; font-size: .72rem; color: var(--suave); border: 1px solid var(--borde); border-radius: 999px; padding: 1px 8px; background: var(--superficie); }
+.cab-titulo { display: flex; align-items: center; gap: 8px; }
+.logo-cab { width: 32px; height: 32px; border-radius: 8px; flex: none; }
+.version { font-size: .72rem; color: var(--suave); border: 1px solid var(--borde); border-radius: 999px; padding: 1px 8px; background: var(--superficie); }

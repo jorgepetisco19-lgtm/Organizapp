@@ -229,7 +229,12 @@ function marco() {
   const titulo = { inicio: 'Organizapp', calendario: 'Calendario', menu: 'Menú', mas: 'Más' }[S.tab];
   const fechaFab = S.tab === 'calendario' ? S.diaSel : (S.inicioDia === 'hoy' ? hoyISO() : sumarDias(hoyISO(), 1));
   return el('div', { class: 'marco' },
-    el('header', { class: 'cab' }, el('h1', {}, titulo), el('span', { class: 'version', title: 'Versión de la app' }, `v${S.version}`), S.tab === 'mas' ? null : capasChips()),
+    el('header', { class: 'cab' },
+      el('div', { class: 'cab-titulo' },
+        el('img', { src: 'icons/logo-cabecera.png', alt: '', width: 32, height: 32, class: 'logo-cab' }),
+        el('h1', {}, titulo),
+        el('span', { class: 'version', title: 'Versión de la app' }, `v${S.version}`)),
+      S.tab === 'mas' ? null : capasChips()),
     el('main', { id: 'contenido', class: 'contenido' }, S.cargandoDatos ? el('p', { class: 'vacio' }, 'Cargando…') : vistaActual()),
     el('nav', { class: 'tabs', 'aria-label': 'Secciones' },
       TABS.map(([id, ico, nom]) => el('button', { type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => { S.tab = id; cargarVista(); } },

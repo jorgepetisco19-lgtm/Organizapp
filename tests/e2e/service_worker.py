@@ -27,7 +27,7 @@ with sync_playwright() as p:
     claves = page.evaluate("caches.keys()")
     ok(claves == [f'organizapp-v{VER}'], f'caché creada: {claves}')
     n = page.evaluate("caches.open('organizapp-v%s')" % VER + ".then(c => c.keys()).then(k => k.length)")
-    ok(n == 14, f'archivos en caché: {n}')
+    ok(n == 15, f'archivos en caché: {n}')
     page.reload(); page.wait_for_selector('text=Entrar con Google')
     v = page.evaluate("""new Promise(res => { navigator.serviceWorker.addEventListener('message', e => res(e.data));
         navigator.serviceWorker.controller.postMessage('version'); setTimeout(() => res(null), 3000); })""")
