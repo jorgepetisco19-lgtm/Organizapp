@@ -963,6 +963,8 @@ function tarjetaCalendario() {
       el('ul', { class: 'personas' }, S.enviadas.map((i) => el('li', { class: 'amigo-fila' },
         el('span', {}, `${i.destino} · ${etiquetaRol(i.relacion)}`),
         el('button', { class: 'enlace', onclick: (e) => conCarga(e.currentTarget, async () => { await D.borrarInvitacion(i.id); await cargarTodo(); }) }, 'Quitar'))))) : null,
+    S.espacios.length > 1 ? el('div', { class: 'bloque' },
+      el('button', { onclick: () => abrirImportarEventos() }, '📋 Importar mis eventos de otro calendario')) : null,
     el('div', { class: 'bloque' },
       soyCreador
         ? el('button', { class: 'peligro', onclick: (e) => {
@@ -1091,6 +1093,13 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
   const notasIn = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Notas (opcional)', disabled: !editable, 'aria-label': 'Notas', value: ev?.notas || '' });
 
+  // Al crear: copiar también a otros calendarios tuyos (como evento tuyo), para no apuntarlo dos veces.
+  const otrosCals = nuevo ? S.espacios.filter((e) => e.id !== S.espacio.id) : [];
+  const copiasChk = otrosCals.map(() => el('input', { type: 'checkbox' }));
+  const copiasUI = otrosCals.length ? el('fieldset', { class: 'copiar-a' },
+    el('legend', {}, 'Añadir también a (como evento tuyo)'),
+    otrosCals.map((e, i) => el('label', { class: 'check-fila' }, copiasChk[i], el('span', {}, e.nombre)))) : null;
+
   let quienUI = null;
   if (S.miembros.length > 1) {
     if (editable) {
@@ -1117,10 +1126,17 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
       compartido: para === 'todos',
     };
     const owner = para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para;
+    const destinos = otrosCals.filter((_, i) => copiasChk[i].checked);
     return conCarga(btn, async () => {
-      if (nuevo) await D.crearEventos([{ ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id }]);
-      else await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
-      cerrar(); aviso('Guardado'); await cargarVista(true);
+      if (nuevo) {
+        await D.crearEventos([
+          { ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id },
+          ...destinos.map((e) => filaCopia({ ...campos, excepciones: [] }, e.id)),
+        ]);
+      } else await D.guardarEvento(ev.id, { ...campos, owner_id: owner });
+      cerrar();
+      aviso(destinos.length ? `Guardado y copiado a ${destinos.map((e) => e.nombre).join(', ')}` : 'Guardado');
+      await cargarVista(true);
     });
   };
 
@@ -1141,11 +1157,81 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     hastaWrap,
     ev?.repeticion && editable ? el('p', { class: 'suave' }, 'Los cambios se aplican a toda la serie. Para quitar solo un día, usa «Borrar».') : null,
     notasIn,
+    copiasUI,
     editable ? el('div', { class: 'fila-botones fin' },
       !nuevo ? el('button', { type: 'button', class: 'peligro', onclick: (e) => borrar(e.currentTarget) }, 'Borrar') : null,
       el('button', { type: 'button', class: 'primario', onclick: (e) => guardar(e.currentTarget) }, 'Guardar')) : null);
   const cerrar = modal(nuevo ? 'Nuevo evento' : (editable ? 'Editar evento' : 'Evento'), cuerpo);
   if (nuevo) setTimeout(() => titulo.focus(), 50);
+}
+
+// Una copia de un evento para otro calendario: siempre como evento TUYO (no "de todos").
+function filaCopia(src, espacioId) {
+  return {
+    espacio_id: espacioId, owner_id: S.user.id, creado_por: S.user.id, compartido: false,
+    tipo: src.tipo, titulo: src.titulo, fecha: src.fecha, hora_inicio: src.hora_inicio || null, hora_fin: src.hora_fin || null,
+    notas: src.notas || null, repeticion: src.repeticion || null, repite_hasta: src.repite_hasta || null, excepciones: src.excepciones || [],
+  };
+}
+
+// Importa TUS eventos de otro de tus calendarios al que tienes abierto (copias independientes).
+function abrirImportarEventos() {
+  const otros = S.espacios.filter((e) => e.id !== S.espacio.id);
+  if (!otros.length) return aviso('Necesitas otro calendario para importar.', true);
+  const clave = (e) => [e.tipo, String(e.titulo).trim().toLowerCase(), e.fecha, hhmm(e.hora_inicio), hhmm(e.hora_fin), e.repeticion || ''].join('|');
+  const origenSel = el('select', { 'aria-label': 'Calendario de origen', onchange: () => cargarLista() }, otros.map((e) => el('option', { value: e.id }, e.nombre)));
+  const lista = el('div', { class: 'lista-import', 'aria-live': 'polite' });
+  const botonImportar = el('button', { type: 'button', class: 'primario', disabled: true });
+  const otrasPersonas = S.miembros.filter((m) => m.id !== S.user.id).map((m) => m.nombre);
+  let filas = [];
+
+  const actualizar = () => {
+    const n = filas.filter((f) => f.chk.checked).length;
+    botonImportar.disabled = n === 0;
+    botonImportar.textContent = n ? `Importar ${n} ${n === 1 ? 'evento' : 'eventos'}` : 'Importar';
+  };
+  async function cargarLista() {
+    lista.replaceChildren(el('p', { class: 'suave' }, 'Cargando…')); botonImportar.disabled = true; filas = [];
+    try {
+      const [origen, destino] = await Promise.all([D.eventosDe(origenSel.value, S.user.id), D.eventosDe(S.espacio.id, S.user.id)]);
+      const hoy = hoyISO();
+      const yaEstan = new Set(destino.map(clave));
+      const vigentes = origen
+        .filter((e) => !e.compartido && (e.repeticion ? (!e.repite_hasta || e.repite_hasta >= hoy) : e.fecha >= hoy))
+        .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.hora_inicio || '').localeCompare(String(b.hora_inicio || '')));
+      if (!vigentes.length) { lista.replaceChildren(el('p', { class: 'suave' }, 'No tienes eventos de hoy en adelante en ese calendario.')); return; }
+      filas = vigentes.map((ev) => {
+        const ya = yaEstan.has(clave(ev));
+        const chk = el('input', { type: 'checkbox', checked: !ya, disabled: ya, onchange: actualizar });
+        const t = TIPOS.find((x) => x.id === ev.tipo);
+        const cuando = ev.repeticion
+          ? `Cada semana desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}`
+          : cap(fechaCorta(ev.fecha));
+        const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : '';
+        return { ev, chk, nodo: el('label', { class: `check-fila fila-import${ya ? ' ya' : ''}` }, chk,
+          el('span', {}, el('strong', {}, `${t.icono} ${ev.titulo}`), el('br'), el('span', { class: 'suave' }, `${cuando}${hora}${ya ? ' · ya está' : ''}`))) };
+      });
+      lista.replaceChildren(
+        el('button', { type: 'button', class: 'enlace', onclick: () => { const todos = filas.every((f) => f.chk.disabled || f.chk.checked); filas.forEach((f) => { if (!f.chk.disabled) f.chk.checked = !todos; }); actualizar(); } }, 'Marcar / desmarcar todos'),
+        ...filas.map((f) => f.nodo));
+      actualizar();
+    } catch (e) { lista.replaceChildren(el('p', { class: 'error-txt' }, e.message || String(e))); }
+  }
+
+  botonImportar.onclick = () => conCarga(botonImportar, async () => {
+    const sel = filas.filter((f) => f.chk.checked).map((f) => filaCopia(f.ev, S.espacio.id));
+    if (!sel.length) return;
+    await D.crearEventos(sel);
+    cerrar(); S.rango = null;
+    aviso(`${sel.length} ${sel.length === 1 ? 'evento importado' : 'eventos importados'}`);
+    await cargarVista(true);
+  });
+  const cerrar = modal('Importar mis eventos', el('div', { class: 'formulario' },
+    el('label', {}, 'Traer desde', origenSel),
+    lista,
+    el('p', { class: 'suave' }, `Se copian como eventos tuyos a «${S.espacio.nombre}». ${otrasPersonas.length ? `Los verán: ${otrasPersonas.join(', ')}.` : 'Ahora solo los ves tú.'} Son copias: si cambias uno, el otro no se modifica.`),
+    el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'), botonImportar)));
+  cargarLista();
 }
 
 function abrirBorradoSerie(ev, fecha, cerrarEditor) {

@@ -269,3 +269,12 @@ body.arrastrando { overscroll-behavior: contain; }
 details.plegable > summary { cursor: pointer; color: var(--acento); font-weight: 600; padding: .2rem 0; }
 details.plegable[open] > summary { margin-bottom: .5rem; }
 details.plegable > * + * { margin-top: .5rem; }
+
+/* ---- copiar / importar eventos entre calendarios ---- */
+.copiar-a { border: 1px solid var(--borde); border-radius: 12px; padding: .5rem .8rem .7rem; margin: .2rem 0; }
+.copiar-a legend { font-size: .88rem; color: var(--suave); padding: 0 .3rem; }
+.check-fila { display: flex; align-items: flex-start; gap: .6rem; padding: .35rem 0; cursor: pointer; }
+.check-fila input[type="checkbox"] { width: 1.2rem; height: 1.2rem; margin-top: .15rem; flex: none; accent-color: var(--acento); }
+.lista-import { display: grid; gap: .2rem; max-height: 42vh; overflow-y: auto; margin: .3rem 0; padding: .2rem 0; }
+.fila-import { border-bottom: 1px solid color-mix(in srgb, var(--suave) 18%, transparent); }
+.fila-import.ya { opacity: .55; cursor: default; }

@@ -98,6 +98,8 @@ export async function cargarMenu(espacioId, desde, hasta) {
   return ok(await sb.from('menu').select('*').eq('espacio_id', espacioId).gte('fecha', desde).lte('fecha', hasta));
 }
 
+export const eventosDe = async (espacioId, ownerId) =>
+  ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).eq('owner_id', ownerId));
 export const crearEventos = async (filas) => ok(await sb.from('eventos').insert(filas));
 export const guardarEvento = async (id, campos) =>
   exactamente(ok(await sb.from('eventos').update(campos).eq('id', id).select('id')), 1);
