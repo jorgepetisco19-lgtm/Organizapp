@@ -764,12 +764,17 @@ function vistaCalendario() {
     S.calVista === 'semana' ? vistaSemana() : vistaMes());
 }
 
-// Resumen del menú de un día: por persona, su comida y su cena completas (una línea por franja, platos separados por «·»).
+// Resumen del menú de un día en la vista semanal: por persona, TODAS sus franjas con comida apuntada
+// (desayuno, media mañana, comida, merienda y cena), una línea por franja y los platos separados por «·».
 function resumenMenuDia(dia) {
   const filas = visiblesCapas().map((m) => {
-    const partes = ['comida', 'cena'].map((f) => S.menuMap.get(claveMenu(dia, m.id, f))).filter(Boolean)
-      .map((r) => r.texto.split('\n').map((s) => s.trim()).filter(Boolean).join(' · '));
-    return partes.length ? el('div', { class: 'menu-resumen', style: { '--c': m.color } }, el('span', { class: 'punto' }), el('span', { class: 'menu-txt' }, partes.join('\n'))) : null;
+    const partes = FRANJAS.map((f) => ({ f, r: S.menuMap.get(claveMenu(dia, m.id, f.id)) })).filter((x) => x.r && x.r.texto.trim());
+    if (!partes.length) return null;
+    return el('div', { class: 'menu-resumen', style: { '--c': m.color } },
+      el('span', { class: 'punto' }),
+      el('div', { class: 'menu-franjas' }, partes.map(({ f, r }) => el('div', { class: 'menu-linea' },
+        el('strong', {}, f.nombre + (r.hora ? ` ${hhmm(r.hora)}` : '')), ' ',
+        r.texto.split('\n').map((s) => s.trim()).filter(Boolean).join(' · ')))));
   }).filter(Boolean);
   return filas.length ? el('div', { class: 'menu-dia-sem' }, el('span', { class: 'suave' }, '🍽️'), el('div', {}, filas)) : null;
 }

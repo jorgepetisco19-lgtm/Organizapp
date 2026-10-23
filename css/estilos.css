@@ -233,7 +233,9 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .dia-sem .fila-evento { background: var(--fondo); }
 .menu-dia-sem { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; font-size: .85rem; }
 .menu-resumen { display: flex; gap: 6px; align-items: flex-start; color: var(--suave); margin-bottom: 4px; }
-.menu-resumen .menu-txt { white-space: pre-line; overflow-wrap: anywhere; }
+.menu-resumen .menu-franjas { overflow-wrap: anywhere; }
+.menu-resumen .menu-linea { margin-bottom: 2px; }
+.menu-resumen .menu-linea strong { color: var(--texto, inherit); font-weight: 600; }
 .menu-resumen .punto { width: 8px; height: 8px; flex: none; margin-top: .4em; }
 
 .tl.expandido .tl-ev { top: var(--te); }
