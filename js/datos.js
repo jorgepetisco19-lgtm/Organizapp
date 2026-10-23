@@ -1,0 +1,90 @@
+// Todo lo que habla con Supabase está aquí. La pantalla (app.js) no toca la base de datos directamente.
+import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
+});
+export const auth = sb.auth;
+
+function traducir(error) {
+  const m = String(error.message || error);
+  if (error.code === '23505') return 'Eso ya existe.';
+  if (/row-level security|permission denied/i.test(m)) return 'No tienes permiso para hacer eso.';
+  if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Sin conexión. Inténtalo de nuevo.';
+  return m;
+}
+function ok({ data, error }) {
+  if (error) throw new Error(traducir(error));
+  return data;
+}
+// Las reglas de acceso hacen que un cambio no permitido afecte a 0 filas sin dar error: lo detectamos.
+function exactamente(data, n, mensaje) {
+  if (!data || data.length !== n) throw new Error(mensaje || 'No se pudo guardar. Puede que no tengas permiso.');
+  return data;
+}
+
+// ---------- sesión ----------
+export const iniciarSesion = async () =>
+  ok(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }));
+export const cerrarSesion = async () => ok(await sb.auth.signOut());
+export const alCambiarSesion = (cb) => sb.auth.onAuthStateChange(cb);
+
+// ---------- contexto: perfil, calendario, personas, invitaciones ----------
+export async function cargarContexto(user) {
+  const md = user.user_metadata || {};
+  const nombre = md.full_name || md.name || (user.email || '').split('@')[0] || 'Yo';
+  const perfil = ok(await sb.rpc('iniciar_perfil', { p_nombre: nombre }));
+  const mias = ok(await sb.from('miembros').select('espacio_id, relacion').eq('user_id', user.id));
+  const invitaciones = ok(await sb.rpc('mis_invitaciones'));
+  if (!mias.length) return { perfil, espacio: null, relacion: null, miembros: [], enviadas: [], invitaciones };
+
+  const mia = mias[0]; // primera versión: un solo calendario por persona
+  const espacio = ok(await sb.from('espacios').select('id, nombre').eq('id', mia.espacio_id).single());
+  const lista = ok(await sb.from('miembros').select('user_id, relacion').eq('espacio_id', espacio.id));
+  const perfiles = ok(await sb.from('perfiles').select('id, nombre, color').in('id', lista.map((x) => x.user_id)));
+  const miembros = lista
+    .map((x) => ({ id: x.user_id, relacion: x.relacion, ...(perfiles.find((p) => p.id === x.user_id) || { nombre: 'Alguien', color: '#888888' }) }))
+    .sort((a, b) => (a.id === user.id ? -1 : b.id === user.id ? 1 : a.nombre.localeCompare(b.nombre, 'es')));
+  const enviadas = mia.relacion === 'pareja'
+    ? ok(await sb.from('invitaciones').select('id, email, relacion, creada').eq('espacio_id', espacio.id).order('creada'))
+    : [];
+  return { perfil, espacio, relacion: mia.relacion, miembros, enviadas, invitaciones };
+}
+
+export const crearEspacio = async (nombre) => ok(await sb.rpc('crear_espacio', { p_nombre: nombre }));
+export const aceptarInvitacion = async (id) => ok(await sb.rpc('aceptar_invitacion', { p_id: id }));
+export const rechazarInvitacion = async (id) => ok(await sb.rpc('rechazar_invitacion', { p_id: id }));
+export const invitar = async (espacioId, email, relacion, userId) =>
+  ok(await sb.from('invitaciones').insert({ espacio_id: espacioId, email, relacion, creada_por: userId }));
+export const borrarInvitacion = async (id) =>
+  exactamente(ok(await sb.from('invitaciones').delete().eq('id', id).select('id')), 1);
+export const guardarPerfil = async (id, campos) =>
+  exactamente(ok(await sb.from('perfiles').update(campos).eq('id', id).select('id')), 1);
+
+// ---------- eventos y menú ----------
+export async function cargarRango(espacioId, desde, hasta) {
+  const [ev, mn] = await Promise.all([
+    sb.from('eventos').select('*').eq('espacio_id', espacioId).lte('fecha', hasta)
+      .or(`fecha.gte.${desde},repeticion.not.is.null`),
+    sb.from('menu').select('*').eq('espacio_id', espacioId).gte('fecha', desde).lte('fecha', hasta),
+  ]);
+  return { eventos: ok(ev), menu: ok(mn) };
+}
+export async function cargarMenu(espacioId, desde, hasta) {
+  return ok(await sb.from('menu').select('*').eq('espacio_id', espacioId).gte('fecha', desde).lte('fecha', hasta));
+}
+
+export const crearEventos = async (filas) => ok(await sb.from('eventos').insert(filas));
+export const guardarEvento = async (id, campos) =>
+  exactamente(ok(await sb.from('eventos').update(campos).eq('id', id).select('id')), 1);
+export const borrarEvento = async (id) =>
+  exactamente(ok(await sb.from('eventos').delete().eq('id', id).select('id')), 1);
+
+export async function guardarMenu(filas) {
+  for (let i = 0; i < filas.length; i += 200) {
+    ok(await sb.from('menu').upsert(filas.slice(i, i + 200), { onConflict: 'espacio_id,owner_id,fecha,franja' }));
+  }
+}
+export async function borrarMenu(espacioId, ownerId, fecha, franja) {
+  ok(await sb.from('menu').delete().eq('espacio_id', espacioId).eq('owner_id', ownerId).eq('fecha', fecha).eq('franja', franja));
+}

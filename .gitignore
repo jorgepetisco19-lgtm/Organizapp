@@ -1,0 +1,4 @@
+importar/
+node_modules/
+.DS_Store
+tests/e2e/capturas/
