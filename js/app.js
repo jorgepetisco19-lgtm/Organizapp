@@ -4,7 +4,7 @@ import * as D from './datos.js';
 import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
-  repetirSemanas, analizarImportacion, planAFechas, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu, primeraLinea,
+  repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu, primeraLinea,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -1017,10 +1017,11 @@ function vistaMas() {
     tarjetaAmigos(),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
-      el('p', { class: 'suave' }, 'Importa comidas desde un Excel. Descarga la plantilla, rellénala y súbela.'),
+      el('p', { class: 'suave' }, 'Importa comidas desde un Excel. Descarga una plantilla, rellénala y súbela.'),
       el('div', { class: 'fila-botones' },
         el('button', { onclick: () => abrirImportar() }, '📥 Importar menú'),
-        el('button', { onclick: () => descargarPlantilla() }, '📄 Descargar plantilla'))),
+        el('button', { onclick: () => descargarPlantilla('sencilla') }, '📄 Plantilla sencilla'),
+        el('button', { onclick: () => descargarPlantilla('plan') }, '📄 Plantilla de plan semanal'))),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'La app'),
       el('label', {}, 'Aspecto', temaSel),
@@ -1365,10 +1366,11 @@ function abrirRepetir() {
 }
 
 // ---------- importar menú desde Excel (o CSV) ----------
-function descargarPlantilla() {
-  const bytes = crearXlsx(plantillaMenu());
+function descargarPlantilla(tipo = 'sencilla') {
+  const plan = tipo === 'plan';
+  const bytes = crearXlsx(plan ? plantillaPlanSemanal() : plantillaMenu());
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-  const a = el('a', { href: url, download: 'plantilla-menu-organizapp.xlsx' });
+  const a = el('a', { href: url, download: plan ? 'plantilla-plan-semanal-organizapp.xlsx' : 'plantilla-menu-organizapp.xlsx' });
   document.body.append(a);
   a.click();
   a.remove();
@@ -1379,8 +1381,8 @@ function descargarPlantilla() {
 async function leerArchivoMenu(file) {
   const buf = await file.arrayBuffer();
   const b = new Uint8Array(buf);
-  // "PK": un .xlsx. Si trae una hoja «Menú simple» (plan de alimentación) se lee esa; si no, la primera hoja.
-  if (b[0] === 0x50 && b[1] === 0x4b) return analizarImportacion(await leerXlsx(buf, ['Menú simple', 'Menu simple']));
+  // "PK": un .xlsx. Si trae una hoja «Plan semanal» o «Menú simple» se lee esa; si no, la primera hoja.
+  if (b[0] === 0x50 && b[1] === 0x4b) return analizarImportacion(await leerXlsx(buf, ['Menú simple', 'Menu simple', 'Plan semanal']));
   if (/\.xlsx$/i.test(file.name)) throw new Error('Este archivo no es un Excel (.xlsx) válido. Prueba a descargarlo o guardarlo de nuevo.');
   if (b[0] === 0xd0 && b[1] === 0xcf) throw new Error('Este es un Excel antiguo (.xls). Ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».');
   let texto = new TextDecoder('utf-8').decode(buf);
@@ -1531,8 +1533,11 @@ function abrirImportar() {
   });
 
   cuerpo.append(
-    el('p', { class: 'suave' }, 'Elige el Excel (.xlsx) con tus comidas. Si no tienes uno, descarga la plantilla y rellénala.'),
-    el('div', { class: 'fila-botones' }, el('button', { type: 'button', onclick: () => descargarPlantilla() }, '📄 Descargar plantilla')),
+    el('p', { class: 'suave' }, 'Elige el Excel (.xlsx) con tus comidas. Si no tienes uno, descarga una plantilla y rellénala.'),
+    el('div', { class: 'fila-botones' },
+      el('button', { type: 'button', onclick: () => descargarPlantilla('sencilla') }, '📄 Plantilla sencilla'),
+      el('button', { type: 'button', onclick: () => descargarPlantilla('plan') }, '📄 Plantilla de plan semanal')),
+    el('p', { class: 'suave' }, 'La sencilla es una fila por comida, con su fecha. La de plan semanal sirve para varias semanas, con cantidades y avisos de preparación.'),
     archivo, zona);
   const cerrar = modal('Importar menú', cuerpo);
 }

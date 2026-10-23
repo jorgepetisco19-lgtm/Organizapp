@@ -220,6 +220,49 @@ export function leerImportacion(entrada) {
   return { filas: out, errores, personas: [...new Set(out.map((f) => f.persona))] };
 }
 
+// Plantilla del plan semanal: una fila por plato, con cantidades y trabajo previo. Los nombres de ejemplo no coinciden con nadie.
+export function plantillaPlanSemanal() {
+  const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  return [
+    {
+      nombre: 'Plan semanal',
+      anchos: [9, 12, 15, 8, 14, 38, 10, 9, 16],
+      listas: [
+        { columna: 1, valores: dias },
+        { columna: 2, valores: FRANJAS.map((f) => f.nombre) },
+        { columna: 7, valores: ['g', 'ml', 'ración', 'ud'] },
+        { columna: 8, valores: ['Sí', 'No'] },
+      ],
+      filas: [
+        ['Semana', 'Día', 'Momento', 'Hora', 'Persona', 'Plato', 'Cantidad', 'Unidad', 'Trabajo previo día anterior'],
+        [1, 'Lunes', 'Desayuno', '08:30', 'Nombre 1', 'Overnight oats', 1, 'ración', 'Sí'],
+        [1, 'Lunes', 'Desayuno', '09:00', 'Nombre 2', 'Tostada con tomate', 2, 'ud', 'No'],
+        [1, 'Lunes', 'Comida', '14:00', 'Nombre 1', 'Lentejas', 350, 'g', 'Sí'],
+        [1, 'Lunes', 'Comida', '14:00', 'Nombre 1', 'Fruta del tiempo', 1, 'ud', 'No'],
+        [1, 'Lunes', 'Comida', '14:00', 'Nombre 2', 'Lentejas', 250, 'g', 'Sí'],
+        [1, 'Martes', 'Cena', '21:30', 'Nombre 1', 'Tortilla francesa', 0.75, 'ración', 'No'],
+        [2, 'Lunes', 'Comida', '14:00', 'Nombre 1', 'Arroz con pollo', 400, 'g', 'No'],
+      ],
+    },
+    {
+      nombre: 'Cómo rellenar',
+      anchos: [105],
+      filas: [
+        ['Cómo rellenar el plan semanal'],
+        ['Esta plantilla sirve para planes de varias semanas, con cantidades y avisos de preparación. Si solo quieres apuntar comidas con su fecha, usa la plantilla sencilla.'],
+        ['1. Una fila por plato. Todas las filas con la misma semana, día, momento y persona se juntan en una sola comida. Puedes borrar las filas de ejemplo.'],
+        ['2. Semana: 1, 2, 3… No hace falta poner fechas: al importar eliges con qué lunes empieza la primera semana.'],
+        ['3. Día y Momento: elígelos de la lista (de lunes a domingo; desayuno, media mañana, comida, merienda o cena).'],
+        ['4. Hora: opcional, por ejemplo 14:00. Si pones horas distintas en un mismo momento, la primera es la de la comida.'],
+        ['5. Persona: el nombre de quien come. Puede haber una o varias personas, con los nombres que quieras. Al importar eliges quién es quién en la app.'],
+        ['6. Plato, Cantidad y Unidad: por ejemplo «Lentejas · 350 g». En «ración» puedes poner 0,5 (media), 0,75 (tres cuartos), 1…'],
+        ['7. Trabajo previo día anterior: pon Sí si ese plato hay que dejarlo hecho la víspera (overnight oats, marinar, guisos largos…). Al importar, la app puede crear una tarea el día anterior con la lista de platos.'],
+        ['8. Guarda el archivo como Excel (.xlsx) y súbelo en Organizapp: Más → Importar menú.'],
+      ],
+    },
+  ];
+}
+
 // ---------- plan semanal (hoja plana «Menú simple» de un plan de alimentación) ----------
 // Una fila por semana, día, momento, persona y plato, con cantidad, unidad y «trabajo previo el día anterior» (Sí/No).
 const DIAS_PLAN = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];

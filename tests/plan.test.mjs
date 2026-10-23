@@ -4,8 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { leerXlsx } from '../js/xlsx.js';
-import { analizarImportacion, cantidadTexto, planAFechas, leerImportacion } from '../js/util.js';
+import { leerXlsx, crearXlsx } from '../js/xlsx.js';
+import { analizarImportacion, cantidadTexto, planAFechas, leerImportacion, plantillaPlanSemanal } from '../js/util.js';
+import { writeFileSync } from 'node:fs';
 
 const buf = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 
@@ -107,4 +108,28 @@ test('funciona con cualquier nombre y cualquier número de personas; mayúsculas
   assert.equal(planAFechas(tres.plan, '2026-11-02', [1], { hoy: '2026-10-23' }).filas.length, 3);
   const raras = analizarImportacion([cab, fila('  ana '), fila('ANA'), fila('Álex'), fila('alex')]);
   assert.deepEqual(raras.plan.personas, ['ana', 'Álex']);
+});
+
+test('la plantilla de plan semanal: la abren openpyxl y LibreOffice, trae 4 desplegables y se importa sin errores', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-'));
+  const f = join(dir, 'plantilla.xlsx');
+  const bytes = crearXlsx(plantillaPlanSemanal());
+  writeFileSync(f, bytes);
+  const out = execFileSync('python3', ['-c', `
+import openpyxl
+wb = openpyxl.load_workbook(${JSON.stringify(f)})
+ws = wb['Plan semanal']
+print(wb.sheetnames, ws.max_row, [str(d.sqref) for d in ws.data_validations.dataValidation])`]).toString();
+  assert.match(out, /\['Plan semanal', 'Cómo rellenar'\] 8 \['B2:B1000', 'C2:C1000', 'H2:H1000', 'I2:I1000'\]/);
+  execFileSync('soffice', ['--headless', '--convert-to', 'csv', '--outdir', dir, f], { stdio: 'ignore' });
+  assert.match(readFileSync(join(dir, 'plantilla.csv'), 'utf8'), /Semana,Día,Momento,Hora,Persona,Plato,Cantidad,Unidad,Trabajo previo día anterior/);
+  const r = analizarImportacion(await leerXlsx(buf(bytes), ['Menú simple', 'Plan semanal']));
+  assert.ok(r.plan);
+  assert.equal(r.plan.errores.length, 0, JSON.stringify(r.plan.errores));
+  assert.equal(r.plan.filas.length, 7);
+  assert.deepEqual(r.plan.personas, ['Nombre 1', 'Nombre 2']);
+  assert.deepEqual(r.plan.semanas, [1, 2]);
+  const p = planAFechas(r.plan, '2026-11-02', [1, 2], { hoy: '2026-10-23' });
+  assert.equal(p.tareas.length, 1);
+  assert.equal(p.tareas[0].titulo, 'Preparar para mañana: Overnight oats, Lentejas');
 });

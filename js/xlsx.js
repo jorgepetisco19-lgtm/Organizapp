@@ -247,8 +247,9 @@ export function crearXlsx(hojas) {
       return `<c r="${nombreColumna(c)}${r + 1}" s="${r === 0 ? 1 : 2}" t="inlineStr"><is><t xml:space="preserve">${escapar(t)}</t></is></c>`;
     }).join('') + '</row>').join('');
     const cols = h.anchos ? '<cols>' + h.anchos.map((a, c) => `<col min="${c + 1}" max="${c + 1}" width="${a}" customWidth="1"/>`).join('') + '</cols>' : '';
-    const lista = h.lista
-      ? `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${nombreColumna(h.lista.columna)}2:${nombreColumna(h.lista.columna)}1000"><formula1>"${escapar(h.lista.valores.join(','))}"</formula1></dataValidation></dataValidations>`
+    const listas = h.listas || (h.lista ? [h.lista] : []);
+    const lista = listas.length
+      ? `<dataValidations count="${listas.length}">` + listas.map((l) => `<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${nombreColumna(l.columna)}2:${nombreColumna(l.columna)}1000"><formula1>"${escapar(l.valores.join(','))}"</formula1></dataValidation>`).join('') + '</dataValidations>'
       : '';
     archivos.push({ nombre: `xl/worksheets/sheet${i + 1}.xml`, texto:
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
