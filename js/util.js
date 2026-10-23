@@ -79,10 +79,29 @@ export function ocurrencias(ev, desde, hasta) {
   const fin = ev.repite_hasta && ev.repite_hasta < hasta ? ev.repite_hasta : hasta;
   const exc = new Set(ev.excepciones || []);
   const out = [];
+  if (ev.dias_semana && ev.dias_semana.length) { // varios días a la semana: se mira día a día desde la fecha de inicio
+    const dias = new Set(ev.dias_semana.map(Number));
+    for (let d = ev.fecha > desde ? ev.fecha : desde; d <= fin; d = sumarDias(d, 1)) if (dias.has(diaSemana(d)) && !exc.has(d)) out.push(d);
+    return out;
+  }
   let f = ev.fecha;
   if (f < desde) f = sumarDias(f, Math.ceil(diffDias(desde, f) / 7) * 7);
   for (; f <= fin; f = sumarDias(f, 7)) if (!exc.has(f)) out.push(f);
   return out;
+}
+
+// Días de la semana elegidos para repetir (0 = lunes … 6 = domingo). Devuelve null si equivale a «el día de su fecha».
+export function normalizarDias(dias, fecha) {
+  const u = [...new Set((dias || []).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort((a, b) => a - b);
+  return !u.length || (u.length === 1 && u[0] === diaSemana(fecha)) ? null : u;
+}
+const DIAS_CORTOS = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+// «cada semana» o «cada semana (lun, mié y vie)»
+export function descripcionRepeticion(ev) {
+  const d = (ev.dias_semana || []).map(Number).filter((x) => x >= 0 && x <= 6);
+  if (!d.length) return 'cada semana';
+  const n = d.map((i) => DIAS_CORTOS[i]);
+  return `cada semana (${n.length > 1 ? `${n.slice(0, -1).join(', ')} y ${n[n.length - 1]}` : n[0]})`;
 }
 
 // Orden dentro de un día: primero los eventos sin hora, luego por hora

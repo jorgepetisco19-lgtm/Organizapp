@@ -809,6 +809,42 @@ await db.exec('reset role');
 r = await q(`select (select count(*)::int from public.eventos) e, (select count(*)::int from public.espacios) c`);
 ok('…y los calendarios y eventos de los demás no se tocan', r.rows[0].c >= 3 && r.rows[0].e >= 2, JSON.stringify(r.rows));
 
+// ---------- 10d. Eventos que se repiten varios días a la semana ----------
+console.log('\n10d. dias_semana');
+await db.exec('reset role');
+const eL2 = '00000000-0000-0000-0000-0000000000f9';
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Rutinas',$2)`, [eL2, U.paula.id]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values ($1,$2,'pareja','#111111'),($1,$3,'amigo','#222222'),($1,$4,'amigo','#333333')`, [eL2, U.paula.id, U.tercero.id, U.amigo.id]);
+await como(U.paula);
+const ins8 = (extra) => q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,repeticion,dias_semana,creado_por) values ($1,$2,'deporte','Pilates','2026-11-03',$3,$4,$2) returning id`, [eL2, U.paula.id, ...extra]);
+r = await ins8(['semanal', [1, 3]]);
+ok('Paula crea un evento semanal con dos días (martes y jueves)', !r.error && r.rows.length === 1, r.error);
+const evDias = r.rows[0]?.id;
+r = await q(`select dias_semana from public.eventos where id=$1`, [evDias]);
+ok('Se guardan tal cual', JSON.stringify(r.rows[0]?.dias_semana) === '[1,3]', JSON.stringify(r.rows));
+r = await ins8(['semanal', null]);
+ok('Sin días (null) sigue valiendo: es el día de su fecha', !r.error, r.error);
+r = await ins8(['semanal', [7]]);
+ok('Un día fuera de 0..6 se rechaza', !!r.error, r.error);
+r = await ins8(['semanal', []]);
+ok('Una lista vacía se rechaza', !!r.error, r.error);
+r = await ins8(['semanal', [0, 1, 2, 3, 4, 5, 6, 0]]);
+ok('Más de 7 días se rechaza', !!r.error, r.error);
+r = await ins8([null, [1, 3]]);
+ok('Días sin repetición semanal se rechazan', !!r.error, r.error);
+r = await q(`update public.eventos set repeticion = null, repite_hasta = null where id=$1`, [evDias]);
+ok('No se puede quitar la repetición dejando días marcados', !!r.error, r.error);
+r = await q(`update public.eventos set repeticion = null, repite_hasta = null, dias_semana = null where id=$1 returning id`, [evDias]);
+ok('…pero sí quitando las dos cosas a la vez', !r.error && r.rows.length === 1, r.error);
+await q(`update public.eventos set repeticion = 'semanal', dias_semana = array[1,3]::smallint[] where id=$1`, [evDias]);
+await como(U.tercero);
+r = await q(`update public.eventos set dias_semana = array[0]::smallint[] where id=$1 returning id`, [evDias]);
+ok('Un amigo no puede cambiar los días de un evento de Paula', !r.error && r.rows.length === 0, r.error);
+await como(U.amigo);
+r = await q(`select dias_semana from public.eventos where id=$1`, [evDias]);
+ok('Quien está en el calendario ve los días', JSON.stringify(r.rows[0]?.dias_semana) === '[1,3]', JSON.stringify(r.rows));
+await db.exec('reset role');
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -836,6 +872,10 @@ const mig7 = fs.readFileSync(process.env.SQL7_PATH || '/mnt/user-data/outputs/or
 let e7 = null;
 try { await v11.exec(mig7); await v11.exec(mig7); } catch (e) { e7 = e.message; }
 ok('La migración 07 se aplica dos veces sin errores', !e7, e7);
+const mig8 = fs.readFileSync(process.env.SQL8_PATH || '/mnt/user-data/outputs/organizapp/sql/08_dias_semana.sql', 'utf8');
+let e8 = null;
+try { await v11.exec(mig8); await v11.exec(mig8); } catch (e) { e8 = e.message; }
+ok('La migración 08 se aplica dos veces sin errores', !e8, e8);
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -849,7 +889,7 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05+06+07) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06+07+08) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

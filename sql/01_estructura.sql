@@ -128,6 +128,7 @@ create table if not exists public.eventos (
   repite_hasta date,
   excepciones  date[] not null default '{}',
   hechas       date[] not null default '{}',  -- días en que la tarea está hecha (una tarea que se repite se marca día a día)
+  dias_semana  smallint[],  -- días de la semana en que se repite (0 = lunes … 6 = domingo); vacío = el día de su fecha
   compartido   boolean not null default false,  -- true = es de todos los del calendario (se muestra con un color propio)
   creado_por   uuid references auth.users(id) on delete set null,
   creado       timestamptz not null default now(),
@@ -140,6 +141,12 @@ create table if not exists public.eventos (
 -- Para bases creadas con una versión anterior de este archivo:
 alter table public.eventos add column if not exists compartido boolean not null default false;
 alter table public.eventos add column if not exists hechas date[] not null default '{}';
+alter table public.eventos add column if not exists dias_semana smallint[];
+alter table public.eventos drop constraint if exists eventos_dias_semana_ok;
+alter table public.eventos add constraint eventos_dias_semana_ok check (
+  dias_semana is null
+  or (repeticion is not null and repeticion = 'semanal' and cardinality(dias_semana) between 1 and 7 and dias_semana <@ array[0, 1, 2, 3, 4, 5, 6]::smallint[])
+);
 create index if not exists eventos_espacio_fecha_idx on public.eventos (espacio_id, fecha);
 
 create table if not exists public.menu (

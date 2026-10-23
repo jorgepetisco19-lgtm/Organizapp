@@ -5,6 +5,7 @@ import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
   repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu,
+  ocurrencias, normalizarDias, descripcionRepeticion, nombreDia,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -414,7 +415,7 @@ function filaEvento({ ev, fecha }, compacta = false) {
   return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}${hecha ? ' hecha' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
     el('span', { class: 'hora' }, hora),
     el('span', { class: 'cuerpo' },
-      el('span', { class: 'tit' }, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: 'Se repite cada semana' }, ' ↻') : null,
+      el('span', { class: 'tit' }, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: `Se repite ${descripcionRepeticion(ev)}` }, ' ↻') : null,
         pasos ? el('span', { class: 'progreso' }, ` ${pasos.filter((x) => x.hecha).length}/${pasos.length}`) : null),
       ev.notas ? el('span', { class: 'notas' }, ev.notas) : null),
     S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
@@ -628,7 +629,7 @@ function lineaDeTiempo(conHora, cols) {
       const semanas = ev.repite_hasta ? Math.floor(diffDias(ev.repite_hasta, ev.fecha) / 7) + 1 : null;
       let elegido = false;
       const cerrarPregunta = modal('Evento que se repite', el('div', { class: 'formulario' },
-        el('p', {}, `«${ev.titulo}» se repite cada semana. ¿Qué quieres mover?`),
+        el('p', {}, `«${ev.titulo}» se repite ${descripcionRepeticion(ev)}. ¿Qué quieres mover?`),
         el('div', { class: 'fila-botones columna' },
           el('button', { type: 'button', class: 'primario', onclick: () => { elegido = true; cerrarPregunta(); aplicar('uno'); } }, `Solo el ${fechaCorta(fechaOcurr)}`),
           el('button', { type: 'button', onclick: () => { elegido = true; cerrarPregunta(); aplicar('serie'); } },
@@ -1274,10 +1275,39 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const fechaIn = el('input', { type: 'date', value: ev ? ev.fecha : (fecha || hoyISO()), disabled: !editable, 'aria-label': 'Fecha' });
   const iniIn = el('input', { type: 'time', value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
   const finIn = el('input', { type: 'time', value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
-  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; actualizarSecciones(); } },
+  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; diasWrap.hidden = repSel.value !== 'semanal'; pintarDias(); actualizarSecciones(); } },
     [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || '') === v }, n)));
   const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
   const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
+
+  // Días de la semana en que se repite (botones L M X J V S D). Empieza con el día de la fecha elegida.
+  const fechaBase = ev ? ev.fecha : (fecha || hoyISO());
+  let diasSel = new Set(ev?.dias_semana?.length ? ev.dias_semana.map(Number) : [diaSemana(fechaBase)]);
+  let diasTocados = !!ev?.dias_semana?.length;
+  const diasHint = el('p', { class: 'suave dias-hint' });
+  const diasBtns = ['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((letra, i) => el('button', {
+    type: 'button', class: 'dia-btn', 'aria-label': cap(nombreDia(i)), disabled: !editable,
+    onclick: () => {
+      if (diasSel.has(i)) { if (diasSel.size === 1) return aviso('Deja al menos un día marcado.', true); diasSel.delete(i); } else diasSel.add(i);
+      diasTocados = true; pintarDias();
+    },
+  }, letra));
+  const diasWrap = el('div', { class: 'dias-semana', hidden: (ev?.repeticion || '') !== 'semanal' },
+    el('span', { class: 'etq' }, 'Qué días de la semana'),
+    el('div', { class: 'dias-fila', role: 'group', 'aria-label': 'Días de la semana' }, diasBtns),
+    diasHint);
+  function pintarDias() {
+    diasBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(diasSel.has(i))));
+    const f = fechaIn.value;
+    if (!esFechaISO(f)) { diasHint.textContent = ''; return; }
+    const primera = ocurrencias({ fecha: f, repeticion: 'semanal', dias_semana: [...diasSel] }, f, sumarDias(f, 7))[0];
+    diasHint.textContent = primera ? `La primera vez será el ${fechaLarga(primera).toLowerCase()}.` : '';
+  }
+  fechaIn.addEventListener('change', () => {
+    if (!diasTocados && esFechaISO(fechaIn.value)) diasSel = new Set([diaSemana(fechaIn.value)]);
+    pintarDias();
+  });
+  pintarDias();
   const notasIn = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Notas (opcional)', disabled: !editable, 'aria-label': 'Notas', value: ev?.notas || '' });
 
 
@@ -1372,6 +1402,10 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
       notas: notasIn.value.trim() || null, repeticion: rep || null, repite_hasta: rep && hasta ? hasta : null,
       compartido: para === 'todos',
     };
+    // «dias_semana» solo se escribe si hace falta (así guardar un evento de siempre nunca depende de esa columna)
+    const diasNuevos = rep ? normalizarDias([...diasSel], f) : null;
+    const diasAntes = ev?.dias_semana?.length ? ev.dias_semana.map(Number) : null;
+    if (JSON.stringify(diasNuevos) !== JSON.stringify(diasAntes)) campos.dias_semana = diasNuevos;
     const owner = para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para;
     const destinos = otrosCals.filter((_, i) => copiasChk[i].checked);
     if (!nuevo) {
@@ -1420,6 +1454,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     el('label', {}, ev?.repeticion ? 'Empieza el' : 'Fecha', fechaIn),
     el('div', { class: 'dos' }, el('label', {}, 'Desde', iniIn), el('label', {}, 'Hasta', finIn)),
     el('label', {}, 'Repetir', repSel),
+    diasWrap,
     hastaWrap,
     ev?.repeticion && editable ? el('p', { class: 'suave' }, 'Los cambios se aplican a toda la serie. Para quitar solo un día, usa «Borrar».') : null,
     notasIn,
@@ -1440,6 +1475,7 @@ function filaCopia(src, espacioId) {
     espacio_id: espacioId, owner_id: S.user.id, creado_por: S.user.id, compartido: false,
     tipo: src.tipo, titulo: src.titulo, fecha: src.fecha, hora_inicio: src.hora_inicio || null, hora_fin: src.hora_fin || null,
     notas: src.notas || null, repeticion: src.repeticion || null, repite_hasta: src.repite_hasta || null, excepciones: src.excepciones || [],
+    ...(src.dias_semana && src.dias_semana.length ? { dias_semana: src.dias_semana } : {}),
   };
 }
 
@@ -1447,7 +1483,7 @@ function filaCopia(src, espacioId) {
 function abrirImportarEventos() {
   const otros = S.espacios.filter((e) => e.id !== S.espacio.id);
   if (!otros.length) return aviso('Necesitas otro calendario para importar.', true);
-  const clave = (e) => [e.tipo, String(e.titulo).trim().toLowerCase(), e.fecha, hhmm(e.hora_inicio), hhmm(e.hora_fin), e.repeticion || ''].join('|');
+  const clave = (e) => [e.tipo, String(e.titulo).trim().toLowerCase(), e.fecha, hhmm(e.hora_inicio), hhmm(e.hora_fin), e.repeticion || '', (e.dias_semana || []).join('')].join('|');
   const origenSel = el('select', { 'aria-label': 'Calendario de origen', onchange: () => cargarLista() }, otros.map((e) => el('option', { value: e.id }, e.nombre)));
   const lista = el('div', { class: 'lista-import', 'aria-live': 'polite' });
   const botonImportar = el('button', { type: 'button', class: 'primario', disabled: true });
@@ -1474,7 +1510,7 @@ function abrirImportarEventos() {
         const chk = el('input', { type: 'checkbox', checked: !ya, disabled: ya, onchange: actualizar });
         const t = TIPOS.find((x) => x.id === ev.tipo);
         const cuando = ev.repeticion
-          ? `Cada semana desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}`
+          ? `${cap(descripcionRepeticion(ev))} desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}`
           : cap(fechaCorta(ev.fecha));
         const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : '';
         return { ev, chk, nodo: el('label', { class: `check-fila fila-import${ya ? ' ya' : ''}` }, chk,
@@ -1505,7 +1541,7 @@ function abrirImportarEventos() {
 
 function abrirBorradoSerie(ev, fecha, cerrarEditor) {
   const cerrar = modal('Borrar evento que se repite', el('div', { class: 'formulario' },
-    el('p', {}, `«${ev.titulo}» se repite cada semana. ¿Qué quieres borrar?`),
+    el('p', {}, `«${ev.titulo}» se repite ${descripcionRepeticion(ev)}. ¿Qué quieres borrar?`),
     el('div', { class: 'fila-botones columna' },
       el('button', { type: 'button', onclick: (e) => conCarga(e.currentTarget, async () => {
         await D.guardarEvento(ev.id, { excepciones: [...new Set([...(ev.excepciones || []), fecha])] });

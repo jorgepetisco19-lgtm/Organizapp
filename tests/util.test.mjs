@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   sumarDias, diffDias, diaSemana, inicioSemana, rejillaMes, finMes, sumarMeses, hoyISO,
   ocurrencias, expandirEventos, repetirSemanas, parseCSV, leerImportacion, fechaLarga,
-  primeraLinea, lineasExtra, esFechaISO, esHora,
+  primeraLinea, lineasExtra, esFechaISO, esHora, normalizarDias, descripcionRepeticion,
 } from '../js/util.js';
 
 test('fechas: días de la semana y cambio de hora', () => {
@@ -125,4 +125,41 @@ test('texto del menú', () => {
   assert.equal(lineasExtra('Crema\nPollo\nFruta'), 2);
   assert.equal(lineasExtra('Crema'), 0);
   assert.equal(lineasExtra(''), 0);
+});
+
+test('eventos que se repiten varios días a la semana', () => {
+  // 2026-10-26 es lunes. Lunes, miércoles y viernes (0, 2, 4)
+  const lmv = { id: 'c', fecha: '2026-10-26', repeticion: 'semanal', dias_semana: [0, 2, 4], excepciones: [] };
+  assert.deepEqual(ocurrencias(lmv, '2026-10-26', '2026-11-08'),
+    ['2026-10-26', '2026-10-28', '2026-10-30', '2026-11-02', '2026-11-04', '2026-11-06']);
+  // el rango empieza a mitad de semana
+  assert.deepEqual(ocurrencias(lmv, '2026-10-29', '2026-11-03'), ['2026-10-30', '2026-11-02']);
+  // no sale antes de la fecha de inicio aunque coincida el día de la semana
+  assert.deepEqual(ocurrencias({ ...lmv, fecha: '2026-10-28' }, '2026-10-26', '2026-10-31'), ['2026-10-28', '2026-10-30']);
+  // empieza en un día que no está marcado: la primera vez es el siguiente día marcado
+  assert.deepEqual(ocurrencias({ ...lmv, fecha: '2026-10-27' }, '2026-10-26', '2026-10-31'), ['2026-10-28', '2026-10-30']);
+  // fin de la serie y días quitados
+  assert.deepEqual(ocurrencias({ ...lmv, repite_hasta: '2026-11-02' }, '2026-10-26', '2026-11-30'), ['2026-10-26', '2026-10-28', '2026-10-30', '2026-11-02']);
+  assert.deepEqual(ocurrencias({ ...lmv, excepciones: ['2026-10-28', '2026-11-02'] }, '2026-10-26', '2026-11-04'), ['2026-10-26', '2026-10-30', '2026-11-04']);
+  // fin de semana (sábado y domingo = 5 y 6) cruzando el cambio de hora de octubre
+  assert.deepEqual(ocurrencias({ id: 'd', fecha: '2026-10-24', repeticion: 'semanal', dias_semana: [5, 6], excepciones: [] }, '2026-10-24', '2026-11-01'),
+    ['2026-10-24', '2026-10-25', '2026-10-31', '2026-11-01']);
+  // sin dias_semana (o vacío) todo funciona como siempre: el día de su fecha
+  assert.deepEqual(ocurrencias({ id: 'e', fecha: '2026-10-29', repeticion: 'semanal', dias_semana: [], excepciones: [] }, '2026-10-26', '2026-11-08'), ['2026-10-29', '2026-11-05']);
+  assert.deepEqual(ocurrencias({ id: 'e', fecha: '2026-10-29', repeticion: 'semanal', dias_semana: null, excepciones: [] }, '2026-10-26', '2026-11-08'), ['2026-10-29', '2026-11-05']);
+  // expandirEventos las ordena por día
+  const mapa = expandirEventos([lmv], '2026-10-26', '2026-10-30');
+  assert.deepEqual([...mapa.keys()], ['2026-10-26', '2026-10-28', '2026-10-30']);
+});
+
+test('normalizarDias y descripcionRepeticion', () => {
+  assert.equal(normalizarDias([3], '2026-10-29'), null);           // jueves y la fecha es jueves: como siempre
+  assert.deepEqual(normalizarDias([1], '2026-10-29'), [1]);        // solo martes aunque empiece un jueves
+  assert.deepEqual(normalizarDias([4, 0, 2, 2], '2026-10-26'), [0, 2, 4]);
+  assert.equal(normalizarDias([], '2026-10-26'), null);
+  assert.equal(normalizarDias([9, -1, 'x'], '2026-10-26'), null);
+  assert.equal(descripcionRepeticion({}), 'cada semana');
+  assert.equal(descripcionRepeticion({ dias_semana: [1] }), 'cada semana (mar)');
+  assert.equal(descripcionRepeticion({ dias_semana: [0, 2, 4] }), 'cada semana (lun, mié y vie)');
+  assert.equal(descripcionRepeticion({ dias_semana: [1, 3] }), 'cada semana (mar y jue)');
 });

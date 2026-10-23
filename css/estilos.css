@@ -314,3 +314,10 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 /* lista de viñetas sencilla (por ejemplo, en el aviso de borrar la cuenta) */
 .lista-simple { margin: 0 0 12px; padding-left: 20px; }
 .lista-simple li { margin: 4px 0; }
+
+/* días de la semana en que se repite un evento */
+.dias-semana { margin: 6px 0; }
+.dias-fila { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 4px 0; }
+.dia-btn { min-height: 44px; padding: 0; font-weight: 700; }
+.dia-btn[aria-pressed="true"] { border-color: var(--acento); background: color-mix(in srgb, var(--acento) 18%, var(--superficie)); }
+.dias-hint { margin: 2px 0 0; }
