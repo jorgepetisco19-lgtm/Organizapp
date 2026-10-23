@@ -83,19 +83,22 @@ const letrasAColumna = (letras) => {
 
 // ---------- leer .xlsx ----------
 
-export async function leerXlsx(buffer) {
+// Lee una hoja del libro y devuelve sus filas. Por defecto la primera; con `preferidas` (nombres de hoja, sin
+// distinguir mayúsculas ni tildes) lee la primera hoja que coincida con alguno de ellos.
+const normHoja = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+export async function leerXlsx(buffer, preferidas = []) {
   const zip = await leerZip(buffer);
   if (!zip.tiene('xl/workbook.xml')) throw new Error('Este archivo no parece un Excel (.xlsx).');
 
-  // primera hoja del libro
   let ruta = 'xl/worksheets/sheet1.xml';
   const libro = await zip.texto('xl/workbook.xml');
   const rels = await zip.texto('xl/_rels/workbook.xml.rels');
-  const hoja = libro.match(/<sheet\b[^>]*>/);
-  if (hoja && rels) {
-    const rid = atributo(hoja[0], 'r:id');
+  const hojas = [...libro.matchAll(/<sheet\b[^>]*>/g)].map((m) => ({ nombre: atributo(m[0], 'name') || '', rid: atributo(m[0], 'r:id') }));
+  const quiero = preferidas.map(normHoja);
+  const elegida = hojas.find((h) => quiero.includes(normHoja(h.nombre))) || hojas[0];
+  if (elegida && rels) {
     for (const m of rels.matchAll(/<Relationship\b[^>]*>/g)) {
-      if (atributo(m[0], 'Id') === rid) {
+      if (atributo(m[0], 'Id') === elegida.rid) {
         const t = atributo(m[0], 'Target') || '';
         ruta = t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, '');
       }

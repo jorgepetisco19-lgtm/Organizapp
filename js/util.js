@@ -220,6 +220,114 @@ export function leerImportacion(entrada) {
   return { filas: out, errores, personas: [...new Set(out.map((f) => f.persona))] };
 }
 
+// ---------- plan semanal (hoja plana «Menú simple» de un plan de alimentación) ----------
+// Una fila por semana, día, momento, persona y plato, con cantidad, unidad y «trabajo previo el día anterior» (Sí/No).
+const DIAS_PLAN = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
+const afirmativo = (s) => ['si', 's', '1', 'x', 'true', 'verdadero', 'yes'].includes(clave(s));
+const FRACCIONES = [[1 / 5, '1/5'], [1 / 4, '1/4'], [1 / 3, '1/3'], [2 / 5, '2/5'], [1 / 2, '1/2'], [3 / 5, '3/5'], [2 / 3, '2/3'], [3 / 4, '3/4'], [4 / 5, '4/5']];
+
+export function esPlanSemanal(filas) {
+  if (!Array.isArray(filas) || !filas.length) return false;
+  const c = filas[0].map(clave);
+  return ['semana', 'dia', 'momento', 'persona', 'plato'].every((n) => c.includes(n));
+}
+
+export function cantidadTexto(valor, unidad) {
+  const c = Number(String(valor ?? '').replace(',', '.'));
+  const u = String(unidad || '').trim();
+  if (!Number.isFinite(c) || c <= 0) return u;
+  if (clave(u) === 'racion') {
+    const ent = Math.floor(c + 0.02), resto = c - ent;
+    if (Math.abs(c - Math.round(c)) < 0.02) return `${Math.round(c)} ${Math.round(c) === 1 ? 'ración' : 'raciones'}`;
+    const f = FRACCIONES.find(([v]) => Math.abs(resto - v) < 0.02);
+    if (f) return ent ? `${ent} ${f[1]} raciones` : `${f[1]} ración`;
+    return `${String(Math.round(c * 10) / 10).replace('.', ',')} raciones`;
+  }
+  const n = Math.abs(c - Math.round(c)) < 0.05 ? String(Math.round(c)) : String(Math.round(c * 10) / 10).replace('.', ',');
+  return `${n} ${u}`.trim();
+}
+
+export function leerPlanSemanal(filas) {
+  const c = filas[0].map(clave);
+  const ix = (n) => c.indexOf(n);
+  const iPrevio = c.findIndex((x) => x.startsWith('trabajo_previo') || x === 'tarea' || x === 'previo');
+  const [iS, iD, iM, iH, iP, iPl, iC, iU] = ['semana', 'dia', 'momento', 'hora', 'persona', 'plato', 'cantidad', 'unidad'].map(ix);
+  const franjas = new Set(FRANJAS.map((f) => f.id));
+  const out = [], errores = [];
+  for (let i = 1; i < filas.length; i++) {
+    const r = filas[i];
+    if (!r || r.every((x) => String(x ?? '').trim() === '')) continue;
+    const semana = parseInt(String(r[iS]).trim(), 10);
+    const dia = DIAS_PLAN.indexOf(clave(r[iD]));
+    const franja = clave(r[iM]);
+    const hora = iH >= 0 ? horaDeCelda(r[iH]) : '';
+    const persona = String(r[iP] || '').trim();
+    const plato = String(r[iPl] || '').replace(/\s+/g, ' ').trim();
+    if (!Number.isInteger(semana) || semana < 1) { errores.push({ linea: i + 1, motivo: 'Semana no válida' }); continue; }
+    if (dia < 0) { errores.push({ linea: i + 1, motivo: `Día no válido: ${r[iD]}` }); continue; }
+    if (!franjas.has(franja)) { errores.push({ linea: i + 1, motivo: `Momento no válido: ${r[iM]}` }); continue; }
+    if (hora && !esHora(hora)) { errores.push({ linea: i + 1, motivo: `Hora no válida: ${hora}` }); continue; }
+    if (!persona) { errores.push({ linea: i + 1, motivo: 'Falta la persona' }); continue; }
+    if (!plato) continue;
+    out.push({
+      semana, dia, franja, hora: hora || null, persona, plato,
+      cantidad: cantidadTexto(iC >= 0 ? r[iC] : '', iU >= 0 ? r[iU] : ''),
+      previo: iPrevio >= 0 && afirmativo(r[iPrevio]),
+    });
+  }
+  return {
+    filas: out, errores,
+    personas: [...new Set(out.map((f) => f.persona))],
+    semanas: [...new Set(out.map((f) => f.semana))].sort((a, b) => a - b),
+  };
+}
+
+export const PREFIJO_PREPARAR = 'Preparar para mañana';
+
+// Pone fechas al plan. `lunes` = lunes de la primera semana del archivo; `semanas` = las que se importan;
+// `personas` = quiénes se importan (null = todas). Devuelve las comidas y las tareas de preparación del día anterior.
+export function planAFechas(plan, lunes, semanas, { personas = null, horaTarea = '21:00', hoy = null } = {}) {
+  const base = plan.semanas[0];
+  const elegidas = new Set(semanas);
+  const grupos = new Map();
+  const previos = new Map(); // fecha de la comida → platos que necesitan trabajo previo
+  for (const f of plan.filas) {
+    if (!elegidas.has(f.semana) || (personas && !personas.has(f.persona))) continue;
+    const fecha = sumarDias(lunes, (f.semana - base) * 7 + f.dia);
+    const k = `${fecha}|${f.franja}|${f.persona}`;
+    if (!grupos.has(k)) grupos.set(k, { fecha, franja: f.franja, persona: f.persona, hora: f.hora, lineas: [] });
+    const g = grupos.get(k);
+    const linea = `${f.plato}${f.cantidad ? ' · ' + f.cantidad : ''}`;
+    g.lineas.push(f.hora && g.hora && f.hora !== g.hora ? `${f.hora} ${linea}` : linea);
+    if (f.previo) { if (!previos.has(fecha)) previos.set(fecha, []); previos.get(fecha).push(f); }
+  }
+  const filas = [...grupos.values()].map((g) => ({ fecha: g.fecha, persona: g.persona, franja: g.franja, hora: g.hora, texto: g.lineas.join('\n').slice(0, 1000) }));
+  const tareas = [];
+  let omitidas = 0;
+  for (const [fecha, lista] of [...previos].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const dia = sumarDias(fecha, -1);
+    if (hoy && dia < hoy) { omitidas++; continue; }
+    const nombres = [...new Set(lista.map((f) => f.plato))];
+    let titulo = `${PREFIJO_PREPARAR}: ${nombres.join(', ')}`;
+    if (titulo.length > 118) titulo = titulo.slice(0, 117).trimEnd() + '…';
+    const porPlato = new Map();
+    for (const f of lista) {
+      const k = `${f.franja}|${f.plato}`;
+      if (!porPlato.has(k)) porPlato.set(k, { franja: FRANJAS.find((x) => x.id === f.franja).nombre, plato: f.plato, quien: [] });
+      if (!porPlato.get(k).quien.includes(f.persona)) porPlato.get(k).quien.push(f.persona);
+    }
+    const notas = [...porPlato.values()].map((p) => `${p.franja}: ${p.plato} (${p.quien.join(', ')})`).join('\n').slice(0, 1000);
+    tareas.push({ fecha: dia, hora: horaTarea, titulo, notas });
+  }
+  return { filas, tareas, omitidas };
+}
+
+// Entrada: filas (de un .xlsx) o texto CSV. Devuelve { plan } si es la hoja plana de un plan semanal, o el resultado normal.
+export function analizarImportacion(entrada) {
+  const filas = Array.isArray(entrada) ? entrada : parseCSV(entrada);
+  return esPlanSemanal(filas) ? { plan: leerPlanSemanal(filas) } : leerImportacion(filas);
+}
+
 // ---------- color ----------
 export function colorSuave(hex, alfa = 0.18) {
   const n = parseInt(String(hex).replace('#', ''), 16);

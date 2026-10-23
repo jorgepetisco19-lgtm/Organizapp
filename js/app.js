@@ -4,7 +4,7 @@ import * as D from './datos.js';
 import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
-  repetirSemanas, leerImportacion, diffDias, diaSemana, plantillaMenu, primeraLinea,
+  repetirSemanas, analizarImportacion, planAFechas, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu, primeraLinea,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -1379,12 +1379,105 @@ function descargarPlantilla() {
 async function leerArchivoMenu(file) {
   const buf = await file.arrayBuffer();
   const b = new Uint8Array(buf);
-  if (b[0] === 0x50 && b[1] === 0x4b) return leerImportacion(await leerXlsx(buf)); // "PK": un .xlsx
+  // "PK": un .xlsx. Si trae una hoja «Menú simple» (plan de alimentación) se lee esa; si no, la primera hoja.
+  if (b[0] === 0x50 && b[1] === 0x4b) return analizarImportacion(await leerXlsx(buf, ['Menú simple', 'Menu simple']));
   if (/\.xlsx$/i.test(file.name)) throw new Error('Este archivo no es un Excel (.xlsx) válido. Prueba a descargarlo o guardarlo de nuevo.');
   if (b[0] === 0xd0 && b[1] === 0xcf) throw new Error('Este es un Excel antiguo (.xls). Ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».');
   let texto = new TextDecoder('utf-8').decode(buf);
   if (texto.includes('\uFFFD')) texto = new TextDecoder('windows-1252').decode(buf); // CSV guardado por Excel sin UTF-8
-  return leerImportacion(texto);
+  return analizarImportacion(texto);
+}
+
+// Hoja plana de un plan de alimentación (semana, día, momento, persona, plato…): pide el lunes de inicio y,
+// si quieres, crea una tarea de preparación el día anterior por cada día con platos que lo necesitan.
+function zonaPlanSemanal(plan, cerrar) {
+  if (!plan.filas.length) return [el('p', { class: 'error-txt' }, plan.errores[0]?.motivo || 'No hay comidas en el archivo.')];
+  const hoy = hoyISO();
+  const l = inicioSemana(hoy);
+  const lunesIn = el('input', { type: 'date', value: l < hoy ? sumarDias(l, 7) : l, 'aria-label': 'Lunes en que empieza la primera semana' });
+  const horaIn = el('input', { type: 'time', value: '21:00', 'aria-label': 'Hora de las tareas de preparación' });
+  const hayPrevio = plan.filas.some((f) => f.previo);
+  const tareasChk = el('input', { type: 'checkbox', checked: hayPrevio, disabled: !hayPrevio, onchange: () => recalcular() });
+  const semChk = plan.semanas.map((s) => el('input', { type: 'checkbox', checked: true, onchange: () => recalcular() }));
+  const mapeo = {};
+  const selects = plan.personas.map((nombre) => {
+    const coincide = S.miembros.find((m) => m.nombre.trim().toLowerCase() === nombre.toLowerCase())
+      || S.miembros.find((m) => m.nombre.toLowerCase().startsWith(nombre.toLowerCase().split(' ')[0]));
+    mapeo[nombre] = coincide && puedeEditarCapa(coincide.id) ? coincide.id : '';
+    const sel = el('select', { 'aria-label': `Quién es ${nombre}`, onchange: () => { mapeo[nombre] = sel.value; recalcular(); } },
+      el('option', { value: '' }, 'No importar'),
+      editables().map((m) => el('option', { value: m.id, selected: m.id === mapeo[nombre] }, m.nombre)));
+    return el('label', {}, `«${nombre}» en el archivo es…`, sel);
+  });
+  const resumen = el('p', { 'aria-live': 'polite' });
+  const aviso1 = el('p', { class: 'error-txt', role: 'alert' });
+  const botonImportar = el('button', { type: 'button', class: 'primario' }, 'Importar');
+  const semLabels = plan.semanas.map((s, i) => el('label', { class: 'check-fila' }, semChk[i], el('span', {})));
+
+  function calcular() {
+    const lunes = lunesIn.value;
+    if (!esFechaISO(lunes) || diaSemana(lunes) !== 0) return { error: 'Elige un lunes: es el día en que empieza la primera semana del archivo.' };
+    const semanas = plan.semanas.filter((_, i) => semChk[i].checked);
+    const personas = new Set(plan.personas.filter((n) => mapeo[n]));
+    if (!semanas.length) return { error: 'Marca al menos una semana.' };
+    if (!personas.size) return { error: 'No has asignado ninguna persona.' };
+    const r = planAFechas(plan, lunes, semanas, { personas, horaTarea: horaIn.value || '21:00', hoy });
+    if (!tareasChk.checked) { r.omitidas = 0; r.tareas = []; }
+    return { lunes, semanas, personas, ...r };
+  }
+  function recalcular() {
+    plan.semanas.forEach((s, i) => {
+      const ini = esFechaISO(lunesIn.value) ? sumarDias(lunesIn.value, (s - plan.semanas[0]) * 7) : null;
+      semLabels[i].lastChild.textContent = ini ? `Semana ${s} · del ${fechaCorta(ini)} al ${fechaCorta(sumarDias(ini, 6))}` : `Semana ${s}`;
+    });
+    const c = calcular();
+    aviso1.textContent = c.error || '';
+    botonImportar.disabled = !!c.error;
+    if (c.error) { resumen.textContent = ''; return; }
+    const fechas = c.filas.map((f) => f.fecha).sort();
+    resumen.textContent = `Se importarán ${c.filas.length} comidas, del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}.`
+      + (tareasChk.checked ? ` Se crearán ${c.tareas.length} tareas de preparación, una por día, la tarde anterior${c.omitidas ? ` (${c.omitidas} se omiten por ser de días pasados)` : ''}.` : '');
+  }
+
+  botonImportar.onclick = () => conCarga(botonImportar, async () => {
+    const c = calcular();
+    if (c.error) throw new Error(c.error);
+    await D.guardarMenu(c.filas.map((x) => ({ espacio_id: S.espacio.id, owner_id: mapeo[x.persona], fecha: x.fecha, franja: x.franja, hora: x.hora, texto: x.texto })));
+    let nTareas = 0;
+    if (tareasChk.checked) {
+      // las tareas de una importación anterior en esas fechas se sustituyen (solo las que empiezan por «Preparar para mañana»)
+      const desde = sumarDias(c.lunes, -1), hasta = sumarDias(c.lunes, 7 * plan.semanas.length + 7);
+      const { eventos } = await D.cargarRango(S.espacio.id, desde, hasta);
+      for (const ev of eventos.filter((e) => e.tipo === 'tarea' && e.compartido && !e.repeticion && String(e.titulo).startsWith(PREFIJO_PREPARAR) && puedeEditarCapa(e.owner_id))) await D.borrarEvento(ev.id);
+      if (c.tareas.length) {
+        await D.crearEventos(c.tareas.map((t) => ({
+          espacio_id: S.espacio.id, owner_id: S.user.id, creado_por: S.user.id, compartido: true, tipo: 'tarea', titulo: t.titulo,
+          fecha: t.fecha, hora_inicio: t.hora, hora_fin: null, notas: t.notas, repeticion: null, repite_hasta: null, excepciones: [],
+        })));
+        nTareas = c.tareas.length;
+      }
+    }
+    cerrar();
+    aviso(`${c.filas.length} comidas importadas${nTareas ? ` y ${nTareas} tareas de preparación` : ''}`);
+    S.tab = 'menu'; S.semana = inicioSemana(c.lunes); S.rango = null; await cargarVista(true);
+  });
+  lunesIn.addEventListener('input', recalcular);
+  horaIn.addEventListener('input', recalcular);
+  recalcular();
+
+  return [
+    el('p', {}, `Es un plan semanal: ${plan.filas.length} platos en ${plan.semanas.length} ${plan.semanas.length === 1 ? 'semana' : 'semanas'}. El archivo no trae fechas, así que dime cuándo empieza.`),
+    plan.errores.length ? el('p', { class: 'suave' }, `${plan.errores.length} líneas se ignoran por errores (por ejemplo, línea ${plan.errores[0].linea}: ${plan.errores[0].motivo}).`) : null,
+    el('label', {}, `La Semana ${plan.semanas[0]} empieza el lunes`, lunesIn),
+    plan.semanas.length > 1 ? el('div', {}, semLabels) : null,
+    ...selects,
+    hayPrevio ? el('div', { class: 'bloque' },
+      el('label', { class: 'check-fila' }, tareasChk, el('span', {}, 'Crear una tarea el día anterior por cada día con platos que necesitan trabajo previo')),
+      el('label', {}, 'A las', horaIn)) : null,
+    resumen, aviso1,
+    el('p', { class: 'suave' }, 'Lo que ya hubiera escrito en esas mismas franjas se sustituye. Las tareas salen en el calendario como «de todos».'),
+    el('div', { class: 'fila-botones fin' }, botonImportar),
+  ];
 }
 
 function abrirImportar() {
@@ -1401,6 +1494,7 @@ function abrirImportar() {
     try { leido = await leerArchivoMenu(f); } catch (e) {
       return zona.append(el('p', { class: 'error-txt', role: 'alert' }, e.message || 'No se pudo leer el archivo.'));
     }
+    if (leido.plan) return zona.append(...zonaPlanSemanal(leido.plan, () => cerrar()).filter(Boolean));
     if (!leido.filas.length) {
       return zona.append(el('p', { class: 'error-txt' }, leido.errores[0]?.motivo || 'No hay comidas en el archivo.'));
     }
@@ -1415,7 +1509,7 @@ function abrirImportar() {
         editables().map((m) => el('option', { value: m.id, selected: m.id === mapeo[nombre] }, m.nombre)));
       return el('label', {}, `«${nombre}» en el archivo es…`, sel);
     });
-    zona.append(
+    zona.append(...[
       el('p', {}, `Hay ${leido.filas.length} comidas, del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}.`),
       leido.errores.length ? el('p', { class: 'suave' }, `${leido.errores.length} líneas se ignoran por errores (por ejemplo, línea ${leido.errores[0].linea}: ${leido.errores[0].motivo}).`) : null,
       ...selects,
@@ -1428,7 +1522,8 @@ function abrirImportar() {
         await D.guardarMenu(filas);
         cerrar(); aviso(`${filas.length} comidas importadas`);
         S.tab = 'menu'; S.semana = inicioSemana(fechas[0]); await cargarVista(true);
-      }) }, 'Importar')));
+      }) }, 'Importar')),
+    ].filter(Boolean));
   });
 
   cuerpo.append(
