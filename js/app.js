@@ -94,9 +94,56 @@ const colorDe = (id) => (miembro(id) || { color: '#888888' }).color;
 // Los eventos "de todos" (compartido) llevan un color propio, distinto de los de cada persona (PALETA no lo incluye).
 const COLOR_AMBOS = '#64748b';
 const etiquetaTodos = () => (S.miembros.length === 2 ? 'Los dos' : 'Todos');
-const colorEv = (ev) => (ev.compartido ? COLOR_AMBOS : colorDe(ev.owner_id));
-const eventoVisible = (e) => e.compartido || S.capas.has(e.owner_id);
+// Eventos de varias personas (participantes): un solo evento para un grupo de 2 a 5 personas del calendario que no son todas.
+const esVarios = (ev) => !ev.compartido && Array.isArray(ev.participantes) && ev.participantes.length >= 2;
+const nombresDe = (ids) => {
+  const n = ids.map((id) => (miembro(id) || { nombre: '?' }).nombre);
+  return n.length < 2 ? n.join('') : `${n.slice(0, -1).join(', ')} y ${n[n.length - 1]}`;
+};
+const etiquetaEv = (ev) => (ev.compartido ? etiquetaTodos() : esVarios(ev) ? nombresDe(ev.participantes) : (miembro(ev.owner_id) || { nombre: '?' }).nombre);
+const colorEv = (ev) => (ev.compartido || esVarios(ev) ? COLOR_AMBOS : colorDe(ev.owner_id));
+const enColumna = (ev, id) => (esVarios(ev) ? ev.participantes.includes(id) : ev.owner_id === id);
+const eventoVisible = (e) => e.compartido || (esVarios(e) ? e.participantes.some((id) => S.capas.has(id)) : S.capas.has(e.owner_id));
 const puedeEditarCapa = (ownerId) => ownerId === S.user.id || S.relacion === 'pareja';
+// Los de varias personas los edita quien los creó o cualquier persona con rol «pareja»; el resto, como siempre.
+const puedeEditarEv = (ev) => (esVarios(ev) ? S.relacion === 'pareja' || ev.creado_por === S.user.id : puedeEditarCapa(ev.owner_id));
+// De «para quién» (un conjunto de personas del calendario) a los campos del evento:
+// una persona → suyo; todas → «compartido»; un grupo → un solo evento con participantes.
+function destinoDe(ids, ownerActual = null) {
+  const todos = S.miembros.map((m) => m.id);
+  const sel = todos.filter((id) => ids.has(id));
+  if (sel.length === todos.length && todos.length > 1) return { compartido: true, participantes: null, owner: ownerActual || S.user.id };
+  if (sel.length === 1) return { compartido: false, participantes: null, owner: sel[0] };
+  return { compartido: false, participantes: sel, owner: ownerActual && sel.includes(ownerActual) ? ownerActual : (sel.includes(S.user.id) ? S.user.id : sel[0]) };
+}
+// Botones «Para» con varias personas marcables (+ «Todos»). Modifica el conjunto `marcadas` y avisa con alCambiar().
+function selectorPara(marcadas, inicial, alCambiar) {
+  const todosIds = S.miembros.map((m) => m.id);
+  const opciones = [...S.miembros.map((m) => ({ id: m.id, nombre: m.nombre, color: m.color })), { id: 'todos', nombre: etiquetaTodos(), color: COLOR_AMBOS }];
+  const pista = el('p', { class: 'suave dias-hint' });
+  const pintar = () => {
+    const todos = marcadas.size === todosIds.length;
+    botones.forEach((b, i) => b.setAttribute('aria-pressed', String(opciones[i].id === 'todos' ? todos : marcadas.has(opciones[i].id))));
+    const ids = todosIds.filter((id) => marcadas.has(id));
+    pista.textContent = todos ? `Un solo evento de todo el calendario («${etiquetaTodos()}»).`
+      : ids.length > 1 ? `Un solo evento para ${nombresDe(ids)}. El resto del calendario lo ve, pero no es suyo.` : '';
+  };
+  const botones = opciones.map((o) => el('button', {
+    type: 'button', class: 'chip-capa', style: { '--c': o.color },
+    disabled: o.id !== 'todos' && !(puedeEditarCapa(o.id) || inicial.has(o.id)),
+    onclick: () => {
+      if (o.id === 'todos') {
+        if (marcadas.size === todosIds.length) { marcadas.clear(); marcadas.add(S.user.id); } else todosIds.forEach((id) => marcadas.add(id));
+      } else if (marcadas.has(o.id)) {
+        if (marcadas.size === 1) return aviso('Deja al menos una persona.', true);
+        marcadas.delete(o.id);
+      } else marcadas.add(o.id);
+      pintar(); if (alCambiar) alCambiar();
+    },
+  }, el('span', { class: 'punto' }), o.nombre));
+  pintar();
+  return el('div', { class: 'quien-lista' }, el('span', { class: 'etq' }, 'Para (puedes marcar varias personas)'), el('div', { class: 'chips', role: 'group', 'aria-label': 'Para quién' }, botones), pista);
+}
 const editables = () => S.miembros.filter((m) => puedeEditarCapa(m.id));
 const visiblesCapas = () => S.miembros.filter((m) => S.capas.has(m.id));
 
@@ -184,7 +231,11 @@ async function prepararEspacio(esp) {
   const guardadas = leerLocal(`capas_${esp.id}`, null);
   const ids = new Set(S.miembros.map((m) => m.id));
   const validas = Array.isArray(guardadas) ? guardadas.filter((i) => ids.has(i)) : [];
-  S.capas = new Set(validas.length ? validas : [...ids]);
+  // Quien se incorpora al calendario aparece visible por defecto aunque tengas guardado un filtro de antes.
+  const vistos = leerLocal(`capas_vistos_${esp.id}`, null);
+  const nuevos = Array.isArray(vistos) ? [...ids].filter((i) => !vistos.includes(i)) : [];
+  S.capas = new Set(validas.length ? [...validas, ...nuevos] : [...ids]);
+  guardarLocal(`capas_vistos_${esp.id}`, [...ids]);
 }
 
 async function cargarTodo(preferido = null) {
@@ -406,8 +457,8 @@ async function marcarPaso(ev, paso, valor) {
   } catch (e) { paso.hecha = antes; render(); aviso(e.message || String(e), true); }
 }
 
-function filaEvento({ ev, fecha }, compacta = false) {
-  const m = ev.compartido ? { nombre: etiquetaTodos(), color: COLOR_AMBOS } : (miembro(ev.owner_id) || { nombre: '?', color: '#888888' });
+function filaEvento({ ev, fecha }, compacta = false, colorCol = null) {
+  const m = ev.compartido || esVarios(ev) ? { nombre: etiquetaEv(ev), color: colorCol || COLOR_AMBOS } : (miembro(ev.owner_id) || { nombre: '?', color: '#888888' });
   const t = TIPOS.find((x) => x.id === ev.tipo);
   const hora = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : 'Todo el día';
   const hecha = esHecha(ev, fecha);
@@ -422,15 +473,15 @@ function filaEvento({ ev, fecha }, compacta = false) {
 }
 
 // Para las listas: lo mismo que filaEvento, pero las tareas llevan su casilla ✓ y sus pasos (con casilla) debajo.
-function bloqueEvento(x, compacta = false) {
+function bloqueEvento(x, compacta = false, colorCol = null) {
   const { ev, fecha } = x;
-  if (ev.tipo !== 'tarea') return filaEvento(x, compacta);
-  const puede = puedeEditarCapa(ev.owner_id);
+  if (ev.tipo !== 'tarea') return filaEvento(x, compacta, colorCol);
+  const puede = puedeEditarEv(ev);
   const hecha = esHecha(ev, fecha);
   const chk = el('input', { type: 'checkbox', checked: hecha, disabled: !puede, 'aria-label': `Hecha: ${ev.titulo}`, onchange: () => marcarHecha(ev, fecha, chk.checked) });
   const pasos = !ev.repeticion && ev.pasos && ev.pasos.length ? ev.pasos : null;
   return el('div', { class: `evento-bloque${hecha ? ' hecha' : ''}` },
-    el('div', { class: 'evento-fila' }, el('label', { class: 'hecho-chk', title: puede ? 'Marcar como hecha' : 'Solo quien puede editarla la marca' }, chk), filaEvento(x, compacta)),
+    el('div', { class: 'evento-fila' }, el('label', { class: 'hecho-chk', title: puede ? 'Marcar como hecha' : 'Solo quien puede editarla la marca' }, chk), filaEvento(x, compacta, colorCol)),
     pasos ? el('ul', { class: 'pasos' }, pasos.map((s) => {
       const c = el('input', { type: 'checkbox', checked: s.hecha, disabled: !puede, onchange: () => marcarPaso(ev, s, c.checked) });
       return el('li', {}, el('label', { class: `paso${s.hecha ? ' hecho' : ''}` }, c, el('span', {}, s.texto)));
@@ -455,12 +506,12 @@ function rejillaPorHoras(items, cols) { // para eventos sin hora o tareas: una f
   return horas.map((h) => {
     const delTramo = items.filter((x) => hora(x) === h);
     const comunes = delTramo.filter((x) => x.ev.compartido);
-    const sueltos = delTramo.filter((x) => !x.ev.compartido);
+    const sueltos = delTramo.filter((x) => !x.ev.compartido); // de una persona o de varias
     return el('div', { class: 'cols-tramo' },
       comunes.map((x) => bloqueEvento(x, true)),
       sueltos.length
         ? el('div', { class: 'cols-fila' }, cols.map((m) => el('div', { class: 'cols-celda' },
-          sueltos.filter((x) => x.ev.owner_id === m.id).map((x) => bloqueEvento(x, true)))))
+          sueltos.filter((x) => enColumna(x.ev, m.id)).map((x) => bloqueEvento(x, true, esVarios(x.ev) ? m.color : null)))))
         : null);
   });
 }
@@ -476,7 +527,10 @@ function lineaDeTiempo(conHora, cols) {
   const deUnaPersona = base.filter((i) => !i.x.ev.compartido);
   const piezas = [];
   for (const it of base) {
-    if (!it.x.ev.compartido) {
+    if (esVarios(it.x.ev)) {
+      // un evento de varias personas sale en la columna de cada participante (es el mismo evento repetido)
+      cols.forEach((m, k) => { if (it.x.ev.participantes.includes(m.id)) piezas.push({ ...it, col: k }); });
+    } else if (!it.x.ev.compartido) {
       const k = cols.findIndex((m) => m.id === it.x.ev.owner_id);
       if (k >= 0) piezas.push({ ...it, col: k });
     } else if (deUnaPersona.some((p) => solapa(it, p))) cols.forEach((_, k) => piezas.push({ ...it, col: k })); // coincide con un plan: sale en cada columna
@@ -533,8 +587,8 @@ function lineaDeTiempo(conHora, cols) {
   const fmtMin = (m) => `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
   function activarArrastre(b, g) {
     const ev = g.x.ev;
-    if (!puedeEditarCapa(ev.owner_id)) return; // solo quien puede editar ese evento
-    const libreH = !ev.compartido && g.col !== 'todos'; // los de "todos" solo se mueven en el tiempo
+    if (!puedeEditarEv(ev)) return; // solo quien puede editar ese evento
+    const libreH = !ev.compartido && !esVarios(ev) && g.col !== 'todos'; // los de "todos" y los de varias personas solo se mueven en el tiempo
     const origen = typeof g.col === 'number' ? g.col : 0;
     const permitidas = new Set();
     cols.forEach((m, k) => { if (libreH ? puedeEditarCapa(m.id) : k === origen) permitidas.add(k); });
@@ -620,6 +674,7 @@ function lineaDeTiempo(conHora, cols) {
             espacio_id: ev.espacio_id, owner_id: nuevoDueno, tipo: ev.tipo, titulo: ev.titulo, fecha: fechaOcurr,
             hora_inicio: campos.hora_inicio ?? ev.hora_inicio ?? null, hora_fin: 'hora_fin' in campos ? campos.hora_fin : (ev.hora_fin ?? null),
             notas: ev.notas ?? null, compartido: !!ev.compartido, creado_por: S.user.id,
+            ...(esVarios(ev) ? { participantes: ev.participantes } : {}),
           }]);
         } else await D.guardarEvento(ev.id, campos);
         aviso(mensaje);
@@ -658,7 +713,7 @@ function lineaDeTiempo(conHora, cols) {
   }
 
   const eventos = piezas.map((g) => {
-    const b = filaEvento(g.x, true);
+    const b = filaEvento(g.x, true, esVarios(g.x.ev) && typeof g.col === 'number' ? cols[g.col].color : null);
     b.classList.add('tl-ev');
     const ancho = g.col === 'todos' ? 100 / g.total : 100 / (n * g.total);
     const izq = g.col === 'todos' ? (g.carril * 100) / g.total : ((g.col + g.carril / g.total) * 100) / n;
@@ -1269,9 +1324,14 @@ async function leerVersionPublicada() {
 // ---------- editor de eventos ----------
 function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const nuevo = !ev;
-  const editable = nuevo || puedeEditarCapa(ev.owner_id);
+  const editable = nuevo || puedeEditarEv(ev);
   let tipo = ev?.tipo || 'plan';
-  let para = ev ? (ev.compartido ? 'todos' : ev.owner_id) : S.user.id; // id de persona o 'todos'
+  let para = ev ? (ev.compartido ? 'todos' : ev.owner_id) : S.user.id; // id de persona o 'todos' (calendarios de dos personas, o sin permiso para elegir varias)
+  // Con 3 o más personas, quien tiene rol «pareja» puede elegir varias a la vez (un solo evento para ese grupo).
+  const todosIds = S.miembros.map((m) => m.id);
+  const modoVarios = S.miembros.length >= 3 && (S.relacion === 'pareja' || (ev && esVarios(ev)));
+  const paraInicial = new Set(ev ? (ev.compartido ? todosIds : esVarios(ev) ? ev.participantes : [ev.owner_id]) : [S.user.id]);
+  const paraSet = new Set(paraInicial);
 
   const tipoBtns = TIPOS.map((t) => el('button', {
     type: 'button', class: 'tipo-btn', 'aria-pressed': String(t.id === tipo), disabled: !editable,
@@ -1385,14 +1445,16 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
 
   let quienUI = null;
   if (S.miembros.length > 1) {
-    if (editable) {
+    if (editable && modoVarios) {
+      quienUI = selectorPara(paraSet, paraInicial);
+    } else if (editable) {
       const opciones = [...editables().map((m) => ({ id: m.id, nombre: m.nombre, color: m.color })), { id: 'todos', nombre: etiquetaTodos(), color: COLOR_AMBOS }];
       const paraBtns = opciones.map((o) => el('button', {
         type: 'button', class: 'chip-capa', 'aria-pressed': String(o.id === para), style: { '--c': o.color },
         onclick: () => { para = o.id; paraBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(opciones[i].id === para))); },
       }, el('span', { class: 'punto' }), o.nombre));
       quienUI = el('div', { class: 'quien-lista' }, el('span', { class: 'etq' }, 'Para'), el('div', { class: 'chips' }, paraBtns));
-    } else quienUI = el('p', {}, el('span', { class: 'etq' }, 'De '), ev.compartido ? etiquetaTodos() : (miembro(ev.owner_id) || { nombre: '?' }).nombre);
+    } else quienUI = el('p', {}, el('span', { class: 'etq' }, esVarios(ev) ? 'Para ' : 'De '), etiquetaEv(ev));
   }
 
   const guardar = (btn) => {
@@ -1407,13 +1469,16 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     const campos = {
       tipo, titulo: t, fecha: f, hora_inicio: hi || null, hora_fin: hf || null,
       notas: notasIn.value.trim() || null, repeticion: rep || null, repite_hasta: rep && hasta ? hasta : null,
-      compartido: para === 'todos',
     };
+    // Para quién es: una persona, todas («compartido») o un grupo (participantes). «participantes» solo se escribe si hace falta.
+    const quien = modoVarios ? destinoDe(paraSet, ev?.owner_id) : { compartido: para === 'todos', participantes: null, owner: para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para };
+    campos.compartido = quien.compartido;
+    if (nuevo ? quien.participantes : JSON.stringify(quien.participantes) !== JSON.stringify(ev.participantes ?? null)) campos.participantes = quien.participantes;
     // «dias_semana» solo se escribe si hace falta (así guardar un evento de siempre nunca depende de esa columna)
     const diasNuevos = rep ? normalizarDias([...diasSel], f) : null;
     const diasAntes = ev?.dias_semana?.length ? ev.dias_semana.map(Number) : null;
     if (JSON.stringify(diasNuevos) !== JSON.stringify(diasAntes)) campos.dias_semana = diasNuevos;
-    const owner = para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para;
+    const owner = quien.owner;
     const destinos = otrosCals.filter((_, i) => copiasChk[i].checked);
     if (!nuevo) {
       // solo se escribe «hechas» si ha cambiado (así guardar un evento nunca depende de esa columna)
@@ -1454,7 +1519,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   };
 
   const cuerpo = el('div', { class: 'formulario' },
-    !editable ? el('p', { class: 'suave' }, 'Solo lectura: este evento es de otra persona.') : null,
+    !editable ? el('p', { class: 'suave' }, esVarios(ev) ? 'Solo lectura: lo edita quien lo creó o quien tiene rol «pareja».' : 'Solo lectura: este evento es de otra persona.') : null,
     el('div', { class: 'tipos-fila', role: 'group', 'aria-label': 'Tipo' }, tipoBtns),
     el('label', {}, 'Título', titulo),
     quienUI,
@@ -1509,7 +1574,7 @@ function abrirImportarEventos() {
       const hoy = hoyISO();
       const yaEstan = new Set(destino.map(clave));
       const vigentes = origen
-        .filter((e) => !e.compartido && (e.repeticion ? (!e.repite_hasta || e.repite_hasta >= hoy) : e.fecha >= hoy))
+        .filter((e) => !e.compartido && !esVarios(e) && (e.repeticion ? (!e.repite_hasta || e.repite_hasta >= hoy) : e.fecha >= hoy))
         .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.hora_inicio || '').localeCompare(String(b.hora_inicio || '')));
       if (!vigentes.length) { lista.replaceChildren(el('p', { class: 'suave' }, 'No tienes eventos de hoy en adelante en ese calendario.')); return; }
       filas = vigentes.map((ev) => {
@@ -1549,8 +1614,7 @@ function abrirImportarEventos() {
 // Importa un archivo .ics (Google Calendar, Outlook, Apple, el calendario de un club…). Se lee en el móvil: no se sube a ningún sitio.
 function abrirImportarICS() {
   const hayVarios = S.miembros.length > 1;
-  const opciones = hayVarios ? [...editables().map((m) => ({ id: m.id, nombre: m.nombre, color: m.color })), { id: 'todos', nombre: etiquetaTodos(), color: COLOR_AMBOS }] : [];
-  let objetivos = new Set([S.user.id]);
+  const objetivos = new Set([S.user.id]); // personas para las que se importa (todas = «compartido»; un grupo = un solo evento con participantes)
   let filas = [], existentes = null;
   const archivo = el('input', { type: 'file', accept: '.ics,text/calendar', 'aria-label': 'Archivo de calendario (.ics)' });
   const mensaje = el('div', { 'aria-live': 'polite' });
@@ -1558,27 +1622,24 @@ function abrirImportarICS() {
   const tipoSel = el('select', { 'aria-label': 'Tipo de todos los eventos' }, TIPOS.map((t) => el('option', { value: t.id, selected: t.id === 'plan' }, `${t.icono} ${t.nombre}`)));
   const botonImportar = el('button', { type: 'button', class: 'primario', disabled: true }, 'Importar');
   const claveEv = (titulo, fecha, hora) => `${String(titulo).trim().toLowerCase()}|${fecha}|${hhmm(hora)}`;
-  const porDueno = new Map(), compartidos = new Set();
-  const existe = (ev, fecha, o) => (o === 'todos' ? compartidos : (porDueno.get(o) || new Set())).has(claveEv(ev.titulo, fecha, ev.hora_inicio));
+  const porDueno = new Map(), compartidos = new Set(), deGrupo = new Set();
+  const claveGrupo = (k, ids) => `${k}|${[...ids].sort().join(',')}`;
+  const existe = (ev, fecha, d) => {
+    const k = claveEv(ev.titulo, fecha, ev.hora_inicio);
+    if (d.compartido) return compartidos.has(k);
+    if (d.participantes) return deGrupo.has(claveGrupo(k, d.participantes));
+    return (porDueno.get(d.owner) || new Set()).has(k);
+  };
   const fechasDe = (ev) => ev.fechas || [ev.fecha];
-  const yaEsta = (ev, o) => fechasDe(ev).every((f) => existe(ev, f, o));
-  const yaEstaEnTodos = (ev) => [...objetivos].every((o) => yaEsta(ev, o));
+  const yaEstaEnTodos = (ev) => { const d = destinoDe(objetivos); return fechasDe(ev).every((f) => existe(ev, f, d)); };
+  const textoPara = () => {
+    const d = destinoDe(objetivos);
+    if (d.compartido) return `para ${S.miembros.length === 2 ? 'los dos' : 'todos'}`;
+    if (d.participantes) return `para ${nombresDe(d.participantes)}`;
+    return d.owner === S.user.id ? 'para ti' : `para ${(miembro(d.owner) || { nombre: '?' }).nombre}`;
+  };
 
-  const chipsQuien = hayVarios ? el('div', { class: 'quien-lista' },
-    el('span', { class: 'etq' }, 'Para (puedes marcar varias personas)'),
-    el('div', { class: 'chips', role: 'group', 'aria-label': 'Para quién' }, opciones.map((o) => {
-      const b = el('button', {
-        type: 'button', class: 'chip-capa', 'aria-pressed': String(objetivos.has(o.id)), style: { '--c': o.color },
-        onclick: () => {
-          if (o.id === 'todos') objetivos = new Set(['todos']);
-          else { objetivos.delete('todos'); if (objetivos.has(o.id)) { if (objetivos.size > 1) objetivos.delete(o.id); } else objetivos.add(o.id); }
-          chipsQuien.querySelectorAll('.chip-capa').forEach((x, i) => x.setAttribute('aria-pressed', String(objetivos.has(opciones[i].id))));
-          refrescar();
-        },
-      }, el('span', { class: 'punto' }), o.nombre);
-      return b;
-    })),
-    el('p', { class: 'suave' }, `«${etiquetaTodos()}» crea un solo evento compartido; si marcas personas, se crea uno para cada una.`)) : null;
+  const chipsQuien = hayVarios ? selectorPara(objetivos, new Set([S.user.id]), () => refrescar()) : null;
 
   function refrescar() {
     for (const f of filas) {
@@ -1592,9 +1653,13 @@ function abrirImportarICS() {
     actualizar();
   }
   function actualizar() {
-    const n = filas.filter((f) => f.chk.checked && !f.chk.disabled).length;
+    const elegidas = filas.filter((f) => f.chk.checked && !f.chk.disabled);
+    const n = elegidas.length;
     botonImportar.disabled = n === 0;
-    botonImportar.textContent = n ? `Importar ${n} ${n === 1 ? 'evento' : 'eventos'}` : 'Importar';
+    if (!n) { botonImportar.textContent = 'Importar'; return; }
+    const d = destinoDe(objetivos);
+    const total = elegidas.reduce((t, f) => t + fechasDe(f.ev).filter((fe) => !existe(f.ev, fe, d)).length, 0);
+    botonImportar.textContent = `Importar ${n} ${n === 1 ? 'evento' : 'eventos'}${hayVarios ? ' ' + textoPara() : ''}${total > n ? ` (${total} fechas en total)` : ''}`;
   }
   const cuando = (ev) => {
     const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : ' · todo el día';
@@ -1613,12 +1678,15 @@ function abrirImportarICS() {
     if (r.error) { mensaje.append(el('p', { class: 'error-txt', role: 'alert' }, r.error)); return; }
     try {
       existentes = await D.eventosEspacio(S.espacio.id);
-      porDueno.clear(); compartidos.clear();
+      porDueno.clear(); compartidos.clear(); deGrupo.clear();
       for (const e of existentes) {
         const k = claveEv(e.titulo, e.fecha, e.hora_inicio);
         if (e.compartido) compartidos.add(k);
-        if (!porDueno.has(e.owner_id)) porDueno.set(e.owner_id, new Set());
-        porDueno.get(e.owner_id).add(k);
+        if (esVarios(e)) deGrupo.add(claveGrupo(k, e.participantes));
+        for (const id of esVarios(e) ? e.participantes : [e.owner_id]) {
+          if (!porDueno.has(id)) porDueno.set(id, new Set());
+          porDueno.get(id).add(k);
+        }
       }
     } catch { /* sin esta comprobación se importa igualmente */ }
     const varios = r.eventos.filter((e) => e.variosDias > 0).length;
@@ -1650,18 +1718,18 @@ function abrirImportarICS() {
 
   botonImportar.onclick = () => conCarga(botonImportar, async () => {
     const registros = [];
+    const d = destinoDe(objetivos);
     for (const f of filas.filter((x) => x.chk.checked && !x.chk.disabled)) {
       const ev = f.ev, tipo = f.tipoFila.value || tipoSel.value;
-      for (const o of objetivos) {
-        for (const fecha of fechasDe(ev)) {
-          if (existe(ev, fecha, o)) continue;
-          registros.push({
-            espacio_id: S.espacio.id, owner_id: o === 'todos' ? S.user.id : o, creado_por: S.user.id, compartido: o === 'todos',
-            tipo, titulo: ev.titulo, fecha, hora_inicio: ev.hora_inicio || null, hora_fin: ev.hora_fin || null, notas: ev.notas || null,
-            repeticion: ev.repeticion || null, repite_hasta: ev.repite_hasta || null, excepciones: ev.excepciones || [],
-            ...(ev.dias_semana && ev.dias_semana.length ? { dias_semana: ev.dias_semana } : {}),
-          });
-        }
+      for (const fecha of fechasDe(ev)) {
+        if (existe(ev, fecha, d)) continue;
+        registros.push({
+          espacio_id: S.espacio.id, owner_id: d.owner, creado_por: S.user.id, compartido: d.compartido,
+          tipo, titulo: ev.titulo, fecha, hora_inicio: ev.hora_inicio || null, hora_fin: ev.hora_fin || null, notas: ev.notas || null,
+          repeticion: ev.repeticion || null, repite_hasta: ev.repite_hasta || null, excepciones: ev.excepciones || [],
+          ...(ev.dias_semana && ev.dias_semana.length ? { dias_semana: ev.dias_semana } : {}),
+          ...(d.participantes ? { participantes: d.participantes } : {}),
+        });
       }
     }
     if (!registros.length) return;

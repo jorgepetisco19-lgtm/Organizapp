@@ -260,6 +260,13 @@ var supabase = (function () {
     const creador = db.espacios.find((e) => e.id === esp)?.creado_por;
     if (creador === quien) return err('No se puede quitar a quien creó el calendario.');
     if (!db.miembros.some((m) => m.espacio_id === esp && m.user_id === quien)) return err('Esa persona no está en el calendario.');
+    // eventos de varias personas: se le quita de la lista (si queda una sola persona, el evento pasa a ser normal)
+    db.eventos.forEach((e) => {
+      if (e.espacio_id !== esp || !Array.isArray(e.participantes) || !e.participantes.includes(quien)) return;
+      const resto = e.participantes.filter((x) => x !== quien);
+      if (e.owner_id === quien) e.owner_id = resto[0];
+      e.participantes = resto.length < 2 ? null : resto;
+    });
     db.eventos.forEach((e) => { if (e.espacio_id === esp && e.owner_id === quien && e.compartido) e.owner_id = creador; });
     db.lineas = db.lineas.filter((l) => !db.eventos.some((e) => e.id === l.evento_id && e.espacio_id === esp && e.owner_id === quien && !e.compartido));
     db.eventos = db.eventos.filter((e) => !(e.espacio_id === esp && e.owner_id === quien));
