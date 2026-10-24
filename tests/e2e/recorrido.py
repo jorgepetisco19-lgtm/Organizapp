@@ -1152,7 +1152,7 @@ with sync_playwright() as p:
     page.get_by_label('Calendario de origen').select_option(label='Nuestro calendario'); page.wait_for_timeout(500)
     fila_f = page.locator('.fila-import', has_text='Fútbol colegas')
     comprobar(fila_f.count() == 1 and 'varias personas' in fila_f.inner_text(), 'en la lista de importar sale el evento de grupo en el que participo, aunque el dueño de la fila sea Paula')
-    comprobar(page.locator('.fila-import', has_text='Cena fuera').count() == 0, 'los eventos «de todos» siguen sin ofrecerse')
+    comprobar(page.locator('.fila-import', has_text='Cena fuera').count() >= 1 and 'todo el calendario' in page.locator('.fila-import', has_text='Cena fuera').first.inner_text(), 'también se ofrecen los eventos «de todos» (Los dos / Todos), que son tuyos igual')
     page.get_by_role('button', name='Marcar / desmarcar todos').click()
     if page.locator('.fila-import input:checked').count(): page.get_by_role('button', name='Marcar / desmarcar todos').click()
     fila_f.locator('input').check()

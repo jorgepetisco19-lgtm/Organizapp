@@ -1571,8 +1571,8 @@ function abrirImportarEventos() {
     lista.replaceChildren(el('p', { class: 'suave' }, 'Cargando…')); botonImportar.disabled = true; filas = [];
     try {
       const [todosOrigen, destino] = await Promise.all([D.eventosEspacio(origenSel.value), D.eventosDe(S.espacio.id, S.user.id)]);
-      // Los tuyos, y los de varias personas en los que participas (aunque figuren a nombre de otra persona). Los «de todos» no.
-      const origen = todosOrigen.filter((e) => !e.compartido && (Array.isArray(e.participantes) && e.participantes.length >= 2 ? e.participantes.includes(S.user.id) : e.owner_id === S.user.id));
+      // Todo lo que es tuyo: lo que figura a tu nombre, lo «de todos» (Los dos / Todos) y lo de grupos en los que participas (aunque lo creara otra persona).
+      const origen = todosOrigen.filter((e) => e.compartido || (Array.isArray(e.participantes) && e.participantes.length >= 2 ? e.participantes.includes(S.user.id) : e.owner_id === S.user.id));
       const hoy = hoyISO();
       const yaEstan = new Set(destino.map(clave));
       const vigentes = origen
@@ -1589,7 +1589,8 @@ function abrirImportarEventos() {
         const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : '';
         return { ev, chk, nodo: el('label', { class: `check-fila fila-import${ya ? ' ya' : ''}` }, chk,
           el('span', {}, el('strong', {}, `${t.icono} ${ev.titulo}`), el('br'), el('span', { class: 'suave' }, `${cuando}${hora}${ya ? ' · ya está' : ''}`),
-            Array.isArray(ev.participantes) && ev.participantes.length >= 2 ? el('span', { class: 'suave' }, el('br'), `Evento de varias personas: se copia solo para ti`) : null)) };
+            ev.compartido ? el('span', { class: 'suave' }, el('br'), 'Evento de todo el calendario: se copia solo para ti')
+              : Array.isArray(ev.participantes) && ev.participantes.length >= 2 ? el('span', { class: 'suave' }, el('br'), 'Evento de varias personas: se copia solo para ti') : null)) };
       });
       lista.replaceChildren(
         el('button', { type: 'button', class: 'enlace', onclick: () => { const todos = filas.every((f) => f.chk.disabled || f.chk.checked); filas.forEach((f) => { if (!f.chk.disabled) f.chk.checked = !todos; }); actualizar(); } }, 'Marcar / desmarcar todos'),
