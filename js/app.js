@@ -5,7 +5,7 @@ import {
   FRANJAS, TIPOS, PALETA, hoyISO, sumarDias, inicioSemana, rejillaMes, finMes, sumarMeses,
   nombreMes, nombreDiaCorto, fechaLarga, fechaCorta, hhmm, esFechaISO, expandirEventos,
   repetirSemanas, analizarImportacion, planAFechas, plantillaPlanSemanal, PREFIJO_PREPARAR, diffDias, diaSemana, plantillaMenu,
-  ocurrencias, normalizarDias, descripcionRepeticion, nombreDia, leerICS, LIMITES_ICS,
+  ocurrencias, diasExtra, fechaFinDe, tramoDia, textoHora, normalizarDias, descripcionRepeticion, nombreDia, leerICS, LIMITES_ICS,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 
@@ -490,12 +490,14 @@ async function marcarPaso(ev, paso, valor) {
   } catch (e) { paso.hecha = antes; render(); aviso(e.message || String(e), true); }
 }
 
-function filaEvento({ ev, fecha }, compacta = false, colorCol = null) {
+function filaEvento(x, compacta = false, colorCol = null) {
+  const { ev, fecha } = x;
   const m = ev.compartido || esVarios(ev) ? { nombre: etiquetaEv(ev), color: colorCol || COLOR_AMBOS } : (miembro(ev.owner_id) || { nombre: '?', color: '#888888' });
   const t = TIPOS.find((x) => x.id === ev.tipo);
-  const hora = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : 'Todo el día';
+  const hora = textoHora(x);
   const hecha = esHecha(ev, fecha);
   const st = subtipoDe(ev);
+  const sigue = x.parte === 'primero' ? `sigue hasta el ${fechaCorta(fechaFinDe(ev, fecha))}` : (x.parte === 'medio' || x.parte === 'ultimo') ? `desde el ${fechaCorta(fecha)}` : '';
   const pasos = !ev.repeticion && ev.pasos && ev.pasos.length ? ev.pasos : null;
   return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}${hecha ? ' hecha' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
     el('span', { class: 'hora' }, hora),
@@ -503,6 +505,7 @@ function filaEvento({ ev, fecha }, compacta = false, colorCol = null) {
       el('span', { class: 'tit' }, st ? el('span', { class: 'subtipo-punto', style: { '--s': st.color }, title: st.nombre }) : null, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: `Se repite ${descripcionRepeticion(ev)}` }, ' ↻') : null,
         pasos ? el('span', { class: 'progreso' }, ` ${pasos.filter((x) => x.hecha).length}/${pasos.length}`) : null),
       st && !compacta ? el('span', { class: 'subtipo', style: { '--s': st.color } }, st.nombre) : null,
+      sigue ? el('span', { class: 'sigue' }, sigue) : null,
       ev.notas ? el('span', { class: 'notas' }, ev.notas) : null),
     S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
 }
@@ -536,7 +539,7 @@ const EJE_PX = 40;       // ancho de la columna de horas
 const aMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 
 function rejillaPorHoras(items, cols) { // para eventos sin hora o tareas: una fila por tramo horario
-  const hora = (x) => (x.ev.hora_inicio ? hhmm(x.ev.hora_inicio) : '');
+  const hora = (x) => { const t = tramoDia(x); return t ? `${pad2(Math.floor(t.a / 60))}:${pad2(t.a % 60)}` : ''; };
   const horas = [...new Set(items.map(hora))].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
   return horas.map((h) => {
     const delTramo = items.filter((x) => hora(x) === h);
@@ -554,8 +557,9 @@ function rejillaPorHoras(items, cols) { // para eventos sin hora o tareas: una f
 function lineaDeTiempo(conHora, cols) {
   const n = cols.length;
   const base = conHora.map((x) => {
-    const a = aMin(hhmm(x.ev.hora_inicio));
-    const b = Math.max(x.ev.hora_fin ? aMin(hhmm(x.ev.hora_fin)) : a + 45, a + 40); // los muy cortos o sin fin se ven con un mínimo
+    const t = tramoDia(x);
+    const a = t.a;
+    const b = x.parte === 'primero' ? t.b : Math.max(t.b ?? a + 45, a + 40); // los muy cortos o sin fin se ven con un mínimo
     return { x, a, b };
   });
   const solapa = (p, q) => p.a < q.b && q.a < p.b;
@@ -623,6 +627,7 @@ function lineaDeTiempo(conHora, cols) {
   function activarArrastre(b, g) {
     const ev = g.x.ev;
     if (!puedeEditarEv(ev)) return; // solo quien puede editar ese evento
+    if (diasExtra(ev) > 0) return;  // los de varios días se cambian desde el editor
     const libreH = !ev.compartido && !esVarios(ev) && g.col !== 'todos'; // los de "todos" y los de varias personas solo se mueven en el tiempo
     const origen = typeof g.col === 'number' ? g.col : 0;
     const permitidas = new Set();
@@ -770,7 +775,7 @@ function agendaEventos(lista, vacio, proporcional = true) {
   if (S.vista !== 'columnas' || cols.length < 2 || cols.length > 3) return lista.map((x) => bloqueEvento(x));
   const cab = el('div', { class: 'cols-fila cols-cab' }, cols.map((m) => el('span', { class: 'cols-nombre', style: { '--c': m.color } }, el('span', { class: 'punto' }), m.nombre)));
   if (!proporcional) return el('div', { class: 'agenda-cols', style: { '--n': cols.length } }, cab, rejillaPorHoras(lista, cols));
-  const sinHora = lista.filter((x) => !x.ev.hora_inicio), conHora = lista.filter((x) => x.ev.hora_inicio);
+  const sinHora = lista.filter((x) => !tramoDia(x)), conHora = lista.filter((x) => tramoDia(x));
   return el('div', { class: 'agenda-cols agenda-tl', style: { '--n': cols.length } },
     cab,
     sinHora.length ? el('div', { class: 'tl-todo-dia' }, el('span', { class: 'tl-hora-fija' }, 'Todo el día'), rejillaPorHoras(sinHora, cols)) : null,
@@ -1431,7 +1436,34 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const fechaIn = el('input', { type: 'date', value: ev ? ev.fecha : (fecha || hoyISO()), disabled: !editable, 'aria-label': 'Fecha' });
   const iniIn = campoHora({ value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
   const finIn = campoHora({ value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
-  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; diasWrap.hidden = repSel.value !== 'semanal'; pintarDias(); actualizarSecciones(); } },
+
+  // Fecha de fin (opcional): para lo que acaba otro día (turno de noche, viaje…). Por dentro se guarda como «días que dura de más»,
+  // así sirve también para lo que se repite (cada vez acaba esos días después de empezar) y no se descuadra al mover la fecha.
+  const finFechaIn = el('input', { type: 'date', value: ev && diasExtra(ev) ? fechaFinDe(ev, ev.fecha) : '', disabled: !editable, 'aria-label': 'Día en que termina' });
+  const finHint = el('p', { class: 'suave fin-hint' });
+  const finQuitar = editable ? el('button', { type: 'button', class: 'enlace', onclick: () => { finWrap.hidden = true; finBoton.hidden = false; finFechaIn.value = ''; finHint.textContent = ''; } }, 'Quitar fecha de fin') : null;
+  const finWrap = el('div', { class: 'fecha-fin', hidden: !(ev && diasExtra(ev)) }, el('label', {}, 'Termina el', finFechaIn), finHint, finQuitar);
+  const finBoton = el('button', { type: 'button', class: 'enlace fecha-fin-boton', hidden: !editable || !!(ev && diasExtra(ev)), onclick: () => mostrarFin(sumarDias(esFechaISO(fechaIn.value) ? fechaIn.value : hoyISO(), 1)) }, '＋ Termina otro día');
+  let extraPrevio = ev ? diasExtra(ev) : 0; // para que, al mover la fecha de inicio, el evento conserve su duración
+  const extraActual = () => (esFechaISO(fechaIn.value) && esFechaISO(finFechaIn.value) ? diffDias(finFechaIn.value, fechaIn.value) : null);
+  function pintarFinHint() {
+    const n = extraActual();
+    if (finWrap.hidden || n === null || n < 0) { finHint.textContent = n !== null && n < 0 ? 'La fecha de fin es anterior al inicio.' : ''; return; }
+    finHint.textContent = repSel.value === 'semanal' && n > 0
+      ? `Cada vez acaba ${n === 1 ? 'al día siguiente' : `${n} días después`} (${nombreDia(diaSemana(finFechaIn.value))}).`
+      : '';
+  }
+  function mostrarFin(v) { finWrap.hidden = false; finBoton.hidden = true; finFechaIn.value = v; const n = extraActual(); if (n !== null && n >= 0) extraPrevio = n; pintarFinHint(); }
+  finFechaIn.addEventListener('change', () => { const n = extraActual(); if (n !== null && n >= 0) extraPrevio = n; pintarFinHint(); });
+  // Si la hora de fin es anterior a la de inicio (22:00 → 06:00), acaba al día siguiente
+  const autoSiguiente = () => {
+    const hi = iniIn.value, hf = finIn.value;
+    if (!esFechaISO(fechaIn.value) || !horaValida(hi) || !horaValida(hf) || hf >= hi) return;
+    if (finWrap.hidden || !(extraActual() > 0)) { mostrarFin(sumarDias(fechaIn.value, 1)); aviso('Acaba al día siguiente'); }
+  };
+  iniIn.addEventListener('blur', autoSiguiente);
+  finIn.addEventListener('blur', autoSiguiente);
+  const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; diasWrap.hidden = repSel.value !== 'semanal'; pintarDias(); pintarFinHint(); actualizarSecciones(); } },
     [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || '') === v }, n)));
   const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
   const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
@@ -1461,7 +1493,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   }
   fechaIn.addEventListener('change', () => {
     if (!diasTocados && esFechaISO(fechaIn.value)) diasSel = new Set([diaSemana(fechaIn.value)]);
-    pintarDias();
+    if (!finWrap.hidden && esFechaISO(fechaIn.value)) finFechaIn.value = sumarDias(fechaIn.value, extraPrevio);
+    pintarDias(); pintarFinHint();
   });
   pintarDias();
   const notasIn = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Notas (opcional)', disabled: !editable, 'aria-label': 'Notas', value: ev?.notas || '' });
@@ -1572,7 +1605,15 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     if (hi && !horaValida(hi)) return aviso('La hora de inicio no es válida (ejemplo: 19:30).', true);
     if (hf && !horaValida(hf)) return aviso('La hora de fin no es válida (ejemplo: 21:00).', true);
     if (hf && !hi) return aviso('Si pones hora de fin, pon también la de inicio.', true);
-    if (hi && hf && hf < hi) return aviso('La hora de fin es anterior a la de inicio.', true);
+    let extra = 0;
+    if (!finWrap.hidden) {
+      if (!esFechaISO(finFechaIn.value)) return aviso('Elige la fecha de fin (o quítala).', true);
+      extra = diffDias(finFechaIn.value, f);
+      if (extra < 0) return aviso('La fecha de fin es anterior al inicio.', true);
+    }
+    if (hi && hf && hf < hi && extra === 0) extra = 1; // 22:00 → 06:00: acaba al día siguiente
+    if (extra > 30) return aviso('Un evento puede durar como máximo 31 días.', true);
+    if (rep && extra > 6) return aviso('Un evento que se repite cada semana puede durar como máximo 7 días (acabar hasta 6 días después de empezar).', true);
     if (rep && hasta && hasta < f) return aviso('«Repetir hasta» es anterior a la fecha.', true);
     if ((tipo !== 'tarea' || rep) && pasosEd.length) return aviso('Esta tarea tiene pasos: quítalos, o déjala como tarea que no se repite.', true);
     const campos = {
@@ -1582,6 +1623,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     // Para quién es: una persona, todas («compartido») o un grupo (participantes). «participantes» solo se escribe si hace falta.
     const quien = modoVarios ? destinoDe(paraSet, ev?.owner_id) : { compartido: para === 'todos', participantes: null, owner: para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para };
     campos.compartido = quien.compartido;
+    // «dias_extra» solo se escribe si hace falta (así guardar un evento de siempre nunca depende de esa columna)
+    if (extra !== (ev ? diasExtra(ev) : 0)) campos.dias_extra = extra;
     const subNuevo = tipo === 'compromiso' ? subtipoSel : null;
     if (nuevo ? subNuevo : subNuevo !== (ev.subtipo_id ?? null)) campos.subtipo_id = subNuevo;
     if (nuevo ? quien.participantes : JSON.stringify(quien.participantes) !== JSON.stringify(ev.participantes ?? null)) campos.participantes = quien.participantes;
@@ -1637,6 +1680,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     quienUI,
     el('label', {}, ev?.repeticion ? 'Empieza el' : 'Fecha', fechaIn),
     el('div', { class: 'dos' }, el('label', {}, 'Desde', iniIn), el('label', {}, 'Hasta', finIn)),
+    finBoton,
+    finWrap,
     el('label', {}, 'Repetir', repSel),
     diasWrap,
     hastaWrap,
@@ -1660,6 +1705,7 @@ function filaCopia(src, espacioId) {
     tipo: src.tipo, titulo: src.titulo, fecha: src.fecha, hora_inicio: src.hora_inicio || null, hora_fin: src.hora_fin || null,
     notas: src.notas || null, repeticion: src.repeticion || null, repite_hasta: src.repite_hasta || null, excepciones: src.excepciones || [],
     ...(src.dias_semana && src.dias_semana.length ? { dias_semana: src.dias_semana } : {}),
+    ...(diasExtra(src) ? { dias_extra: diasExtra(src) } : {}),
   };
 }
 
@@ -1667,7 +1713,7 @@ function filaCopia(src, espacioId) {
 function abrirImportarEventos() {
   const otros = S.espacios.filter((e) => e.id !== S.espacio.id);
   if (!otros.length) return aviso('Necesitas otro calendario para importar.', true);
-  const clave = (e) => [e.tipo, String(e.titulo).trim().toLowerCase(), e.fecha, hhmm(e.hora_inicio), hhmm(e.hora_fin), e.repeticion || '', (e.dias_semana || []).join('')].join('|');
+  const clave = (e) => [e.tipo, String(e.titulo).trim().toLowerCase(), e.fecha, hhmm(e.hora_inicio), hhmm(e.hora_fin), diasExtra(e), e.repeticion || '', (e.dias_semana || []).join('')].join('|');
   const origenSel = el('select', { 'aria-label': 'Calendario de origen', onchange: () => cargarLista() }, otros.map((e) => el('option', { value: e.id }, e.nombre)));
   const lista = el('div', { class: 'lista-import', 'aria-live': 'polite' });
   const botonImportar = el('button', { type: 'button', class: 'primario', disabled: true });
@@ -1688,7 +1734,7 @@ function abrirImportarEventos() {
       const hoy = hoyISO();
       const yaEstan = new Set(destino.map(clave));
       const vigentes = origen
-        .filter((e) => (e.repeticion ? (!e.repite_hasta || e.repite_hasta >= hoy) : e.fecha >= hoy))
+        .filter((e) => (e.repeticion ? (!e.repite_hasta || e.repite_hasta >= hoy) : fechaFinDe(e) >= hoy))
         .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.hora_inicio || '').localeCompare(String(b.hora_inicio || '')));
       if (!vigentes.length) { lista.replaceChildren(el('p', { class: 'suave' }, 'No tienes eventos de hoy en adelante en ese calendario.')); return; }
       filas = vigentes.map((ev) => {
@@ -1697,7 +1743,7 @@ function abrirImportarEventos() {
         const t = TIPOS.find((x) => x.id === ev.tipo);
         const cuando = ev.repeticion
           ? `${cap(descripcionRepeticion(ev))} desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}`
-          : cap(fechaCorta(ev.fecha));
+          : cap(fechaCorta(ev.fecha)) + (diasExtra(ev) ? ` → ${fechaCorta(fechaFinDe(ev))}` : '');
         const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : '';
         return { ev, chk, nodo: el('label', { class: `check-fila fila-import${ya ? ' ya' : ''}` }, chk,
           el('span', {}, el('strong', {}, `${t.icono} ${ev.titulo}`), el('br'), el('span', { class: 'suave' }, `${cuando}${hora}${ya ? ' · ya está' : ''}`),
@@ -1781,7 +1827,7 @@ function abrirImportarICS() {
     const hora = ev.hora_inicio ? ` · ${hhmm(ev.hora_inicio)}${ev.hora_fin ? '–' + hhmm(ev.hora_fin) : ''}` : ' · todo el día';
     if (ev.repeticion) return `${cap(descripcionRepeticion(ev))} desde el ${fechaCorta(ev.fecha)}${ev.repite_hasta ? ` hasta el ${fechaCorta(ev.repite_hasta)}` : ''}${hora}`;
     if (ev.fechas) return `${ev.fechas.length} fechas, del ${fechaCorta(ev.fechas[0])} al ${fechaCorta(ev.fechas[ev.fechas.length - 1])}${hora}`;
-    return `${cap(fechaCorta(ev.fecha))}${hora}`;
+    return `${cap(fechaCorta(ev.fecha))}${ev.diasExtra ? ` → ${fechaCorta(sumarDias(ev.fecha, ev.diasExtra))}` : ''}${hora}`;
   };
 
   async function leer() {
@@ -1805,11 +1851,11 @@ function abrirImportarICS() {
         }
       }
     } catch { /* sin esta comprobación se importa igualmente */ }
-    const varios = r.eventos.filter((e) => e.variosDias > 0).length;
+    const varios = r.eventos.filter((e) => e.diasExtra > 0).length;
     mensaje.append(...[
       el('p', {}, r.eventos.length ? `${r.eventos.length} ${r.eventos.length === 1 ? 'evento' : 'eventos'} de hoy en adelante.` : 'No hay eventos de hoy en adelante en este archivo.'),
       r.pasados ? el('p', { class: 'suave' }, `${r.pasados} ${r.pasados === 1 ? 'ya pasó y no se importa' : 'ya pasaron y no se importan'}.`) : null,
-      varios ? el('p', { class: 'suave' }, `${varios} ${varios === 1 ? 'dura' : 'duran'} varios días: se apunta solo el primer día.`) : null,
+      varios ? el('p', { class: 'suave' }, `${varios} ${varios === 1 ? 'dura' : 'duran'} varios días: se apuntan de principio a fin.`) : null,
       r.truncado ? el('p', { class: 'suave' }, `El archivo trae mucho: se importan como máximo ${LIMITES_ICS.eventos} eventos y las repeticiones que no son semanales se cortan a unos ${Math.round(LIMITES_ICS.dias / 30)} meses.`) : null,
       r.omitidos.length ? el('details', {}, el('summary', { class: 'suave' }, `${r.omitidos.length} no se pueden importar`),
         el('ul', { class: 'lista-simple' }, r.omitidos.map((o) => el('li', {}, `${o.titulo}: ${o.motivo}`)))) : null,
@@ -1844,6 +1890,7 @@ function abrirImportarICS() {
           tipo, titulo: ev.titulo, fecha, hora_inicio: ev.hora_inicio || null, hora_fin: ev.hora_fin || null, notas: ev.notas || null,
           repeticion: ev.repeticion || null, repite_hasta: ev.repite_hasta || null, excepciones: ev.excepciones || [],
           ...(ev.dias_semana && ev.dias_semana.length ? { dias_semana: ev.dias_semana } : {}),
+          ...(ev.diasExtra > 0 ? { dias_extra: ev.diasExtra } : {}),
           ...(d.participantes ? { participantes: d.participantes } : {}),
         });
       }

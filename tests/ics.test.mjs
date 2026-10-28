@@ -31,11 +31,37 @@ test('días enteros, varios días y eventos que acaban al día siguiente', () =>
     ['UID:a', 'SUMMARY:Boda', 'DTSTART;VALUE=DATE:20261030', 'DTEND;VALUE=DATE:20261031'],
     ['UID:b', 'SUMMARY:Torneo', 'DTSTART;VALUE=DATE:20261030', 'DTEND;VALUE=DATE:20261102'],
     ['UID:c', 'SUMMARY:Fiesta', 'DTSTART:20261031T220000', 'DTEND:20261101T010000'],
+    ['UID:d', 'SUMMARY:Medianoche', 'DTSTART:20261031T220000', 'DTEND:20261101T000000'],
+    ['UID:e', 'SUMMARY:Viaje', 'DTSTART:20261031T080000', 'DTEND:20261103T180000'],
+    ['UID:f', 'SUMMARY:Eterno', 'DTSTART;VALUE=DATE:20261030', 'DTEND;VALUE=DATE:20270301'],
   ));
   const por = (t) => r.eventos.find((e) => e.titulo === t);
-  assert.deepEqual([por('Boda').hora_inicio, por('Boda').hora_fin, por('Boda').variosDias], [null, null, 0]);
-  assert.equal(por('Torneo').variosDias, 2);
-  assert.deepEqual([por('Fiesta').hora_inicio, por('Fiesta').hora_fin], ['22:00', null]);
+  assert.deepEqual([por('Boda').hora_inicio, por('Boda').hora_fin, por('Boda').diasExtra], [null, null, 0]);
+  assert.equal(por('Torneo').diasExtra, 2);                                                       // 30, 31 y 1: acaba 2 días después
+  assert.deepEqual([por('Fiesta').hora_inicio, por('Fiesta').hora_fin, por('Fiesta').diasExtra], ['22:00', '01:00', 1]);
+  assert.deepEqual([por('Medianoche').hora_fin, por('Medianoche').diasExtra], [null, 0]);         // acaba a las 00:00: sigue siendo del mismo día
+  assert.deepEqual([por('Viaje').hora_inicio, por('Viaje').hora_fin, por('Viaje').diasExtra], ['08:00', '18:00', 3]);
+  assert.equal(por('Eterno'), undefined);
+  assert.ok(r.omitidos.some((o) => o.titulo === 'Eterno' && /30 días/.test(o.motivo)));
+});
+
+test('un evento de varios días que ya empezó pero sigue en curso se importa; si ya acabó, no', () => {
+  const r = leer(cal(
+    ['UID:a', 'SUMMARY:En curso', 'DTSTART;VALUE=DATE:20261022', 'DTEND;VALUE=DATE:20261026'],
+    ['UID:b', 'SUMMARY:Acabado', 'DTSTART;VALUE=DATE:20261020', 'DTEND;VALUE=DATE:20261023'],
+  ), '2026-10-24');
+  assert.deepEqual(r.eventos.map((e) => e.titulo), ['En curso']);
+  assert.equal(r.pasados, 1);
+});
+
+test('turno de noche semanal: se guarda como serie y cada vez acaba al día siguiente', () => {
+  const r = leer(cal(['UID:a', 'SUMMARY:Noche', 'DTSTART;TZID=Europe/Madrid:20261030T220000', 'DTEND;TZID=Europe/Madrid:20261031T060000', 'RRULE:FREQ=WEEKLY;BYDAY=FR']));
+  assert.equal(r.eventos.length, 1);
+  const e = r.eventos[0];
+  assert.deepEqual([e.repeticion, e.hora_inicio, e.hora_fin, e.diasExtra], ['semanal', '22:00', '06:00', 1]);
+  const largo = leer(cal(['UID:b', 'SUMMARY:Largo', 'DTSTART;VALUE=DATE:20261030', 'DTEND;VALUE=DATE:20261108', 'RRULE:FREQ=WEEKLY']));
+  assert.equal(largo.eventos.length, 0);
+  assert.ok(largo.omitidos.some((o) => /6 días/.test(o.motivo)));
 });
 
 test('textos: escapes, líneas largas, HTML, lugar y cancelados', () => {

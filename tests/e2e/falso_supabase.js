@@ -63,7 +63,7 @@ var supabase = (function () {
         for (const p of this.p) {
           const fila = { id: uuid(), creado: new Date().toISOString(), creada: new Date().toISOString(), ...p };
           if (this.t === 'lineas') { fila.hecha = fila.hecha ?? false; fila.evento_id = fila.evento_id ?? null; fila.orden = fila.orden ?? Date.now(); }
-          if (this.t === 'eventos') { fila.excepciones = fila.excepciones || []; fila.hechas = fila.hechas || []; fila.hora_inicio = hora(fila.hora_inicio ?? null); fila.hora_fin = hora(fila.hora_fin ?? null); }
+          if (this.t === 'eventos') { fila.excepciones = fila.excepciones || []; fila.hechas = fila.hechas || []; fila.dias_extra = fila.dias_extra || 0; fila.hora_inicio = hora(fila.hora_inicio ?? null); fila.hora_fin = hora(fila.hora_fin ?? null); }
           if (this.t === 'menu') fila.hora = hora(fila.hora ?? null);
           let dup = null;
           if (this.t === 'invitaciones') dup = tabla.find((r) => r.espacio_id === fila.espacio_id && r.email === fila.email);

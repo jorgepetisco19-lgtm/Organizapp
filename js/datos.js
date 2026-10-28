@@ -93,9 +93,12 @@ export const regenerarCodigo = async () => ok(await sb.rpc('regenerar_codigo'));
 
 // ---------- eventos y menú ----------
 export async function cargarRango(espacioId, desde, hasta) {
+  // Un evento de varios días puede haber empezado hasta 30 días antes de «desde» (y seguir en curso), así que se piden unos días de más.
+  const antes = new Date(`${desde}T00:00:00Z`); antes.setUTCDate(antes.getUTCDate() - 30);
+  const desdeEv = antes.toISOString().slice(0, 10);
   const [ev, mn] = await Promise.all([
     sb.from('eventos').select('*').eq('espacio_id', espacioId).lte('fecha', hasta)
-      .or(`fecha.gte.${desde},repeticion.not.is.null`),
+      .or(`fecha.gte.${desdeEv},repeticion.not.is.null`),
     sb.from('menu').select('*').eq('espacio_id', espacioId).gte('fecha', desde).lte('fecha', hasta),
   ]);
   return { eventos: ok(ev), menu: ok(mn) };

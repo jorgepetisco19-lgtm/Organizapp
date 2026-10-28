@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   sumarDias, diffDias, diaSemana, inicioSemana, rejillaMes, finMes, sumarMeses, hoyISO,
   ocurrencias, expandirEventos, repetirSemanas, parseCSV, leerImportacion, fechaLarga,
-  primeraLinea, lineasExtra, esFechaISO, esHora, normalizarDias, descripcionRepeticion,
+  primeraLinea, lineasExtra, esFechaISO, esHora, normalizarDias, descripcionRepeticion, diasExtra, fechaFinDe, tramoDia, textoHora,
 } from '../js/util.js';
 
 test('fechas: días de la semana y cambio de hora', () => {
@@ -162,4 +162,53 @@ test('normalizarDias y descripcionRepeticion', () => {
   assert.equal(descripcionRepeticion({ dias_semana: [1] }), 'cada semana (mar)');
   assert.equal(descripcionRepeticion({ dias_semana: [0, 2, 4] }), 'cada semana (lun, mié y vie)');
   assert.equal(descripcionRepeticion({ dias_semana: [1, 3] }), 'cada semana (mar y jue)');
+});
+
+test('eventos que acaban otro día: se reparten por días y aguantan la repetición semanal', () => {
+  // turno de noche: viernes 22:00 → sábado 06:00, cada semana
+  const turno = { id: 't', titulo: 'Turno', fecha: '2026-10-30', hora_inicio: '22:00', hora_fin: '06:00', dias_extra: 1, repeticion: 'semanal', excepciones: [] };
+  assert.equal(diasExtra(turno), 1);
+  assert.equal(diasExtra({}), 0);
+  assert.equal(fechaFinDe(turno, '2026-11-06'), '2026-11-07');
+  const mapa = expandirEventos([turno], '2026-10-30', '2026-11-08');
+  assert.deepEqual([...mapa.keys()], ['2026-10-30', '2026-10-31', '2026-11-06', '2026-11-07']);
+  assert.deepEqual(mapa.get('2026-10-30').map((x) => x.parte), ['primero']);
+  assert.deepEqual(mapa.get('2026-10-31').map((x) => x.parte), ['ultimo']);
+  assert.equal(mapa.get('2026-10-31')[0].fecha, '2026-10-30');  // sigue identificado por el día en que empieza
+  assert.equal(mapa.get('2026-10-31')[0].dia, '2026-10-31');
+  // la rejilla empieza el sábado: la noche del viernes anterior se sigue viendo
+  const desdeSabado = expandirEventos([turno], '2026-10-31', '2026-11-01');
+  assert.deepEqual([...desdeSabado.keys()], ['2026-10-31']);
+  assert.equal(desdeSabado.get('2026-10-31')[0].parte, 'ultimo');
+  // si se quita una noche (excepción), tampoco aparece su mañana siguiente
+  const sinUna = expandirEventos([{ ...turno, excepciones: ['2026-10-30'] }], '2026-10-30', '2026-11-01');
+  assert.equal(sinUna.size, 0);
+  // texto y tramo de cada parte
+  const [p1, p2] = [mapa.get('2026-10-30')[0], mapa.get('2026-10-31')[0]];
+  assert.deepEqual([textoHora(p1), textoHora(p2)], ['22:00 →', '→ 06:00']);
+  assert.deepEqual(tramoDia(p1), { a: 1320, b: 1440 });
+  assert.deepEqual(tramoDia(p2), { a: 0, b: 360 });
+  // de varios días sin horas: todos «todo el día»; en medio también
+  const viaje = { id: 'v', titulo: 'Viaje', fecha: '2026-11-02', hora_inicio: null, hora_fin: null, dias_extra: 2, repeticion: null, excepciones: [] };
+  const mv = expandirEventos([viaje], '2026-11-01', '2026-11-10');
+  assert.deepEqual([...mv.keys()], ['2026-11-02', '2026-11-03', '2026-11-04']);
+  assert.deepEqual([...mv.values()].map((l) => l[0].parte), ['primero', 'medio', 'ultimo']);
+  assert.ok([...mv.values()].every((l) => tramoDia(l[0]) === null && textoHora(l[0]) === 'Todo el día'));
+  // con hora de inicio y de fin: el día de en medio es «todo el día»
+  const gira = { ...viaje, hora_inicio: '10:00', hora_fin: '20:00' };
+  const mg = [...expandirEventos([gira], '2026-11-01', '2026-11-10').values()].map((l) => textoHora(l[0]));
+  assert.deepEqual(mg, ['10:00 →', 'Todo el día', '→ 20:00']);
+  // de un solo día no cambia nada
+  const normal = { id: 'n', titulo: 'Cine', fecha: '2026-11-02', hora_inicio: '19:00', hora_fin: '21:00', repeticion: null, excepciones: [] };
+  const mn = expandirEventos([normal], '2026-11-01', '2026-11-10').get('2026-11-02')[0];
+  assert.equal(mn.parte, 'unico');
+  assert.equal(textoHora(mn), '19:00–21:00');
+  // orden: lo que viene de ayer o es de todo el día va antes que lo que tiene hora
+  const dia = expandirEventos([normal, turno], '2026-10-31', '2026-10-31');
+  assert.equal(dia.get('2026-10-31')[0].ev.id, 't');
+  // dos veces el mismo evento en un mismo día no se pisa si se solapan (semanal con 6 días de más)
+  const largo = { id: 'l', titulo: 'Largo', fecha: '2026-11-02', dias_extra: 6, repeticion: 'semanal', excepciones: [] };
+  const ml = expandirEventos([largo], '2026-11-02', '2026-11-15');
+  assert.equal([...ml.values()].every((l) => l.length === 1), true);
+  assert.equal(ml.size, 14);
 });

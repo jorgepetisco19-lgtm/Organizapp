@@ -1083,6 +1083,54 @@ r = await q(`select count(*)::int n from public.subtipos where espacio_id=$1`, [
 ok('Al borrar el calendario se borran sus subtipos', r.rows[0].n === 0, JSON.stringify(r.rows));
 await db.exec('reset role');
 
+// ---------- 10g. Eventos que acaban otro día (dias_extra) ----------
+console.log('\n10g. dias_extra');
+await db.exec('reset role');
+const eL8 = '00000000-0000-0000-0000-0000000000fe';
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Turnos',$2)`, [eL8, U.paula.id]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values ($1,$2,'pareja','#111111'),($1,$3,'amigo','#222222')`, [eL8, U.paula.id, U.tercero.id]);
+await como(U.paula);
+const insX = (hi, hf, extra, rep = null, fecha = '2026-11-06') => q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,hora_fin,dias_extra,repeticion,creado_por) values ($1,$2,'plan','Turno',$3,$4,$5,$6,$7,$2) returning id`, [eL8, U.paula.id, fecha, hi, hf, extra, rep]);
+r = await insX('22:00', '06:00', 1, 'semanal');
+ok('Un turno de noche 22:00–06:00 que se repite cada semana se guarda (acaba 1 día después)', !r.error && r.rows.length === 1, r.error);
+const evTurno = r.rows[0]?.id;
+r = await insX('22:00', '06:00', 0);
+ok('Hora de fin anterior a la de inicio sin días de más se rechaza', !!r.error, r.error);
+r = await insX('18:00', '20:00', 0);
+ok('Un evento normal sigue valiendo', !r.error, r.error);
+r = await insX('10:00', null, 3);
+ok('Un evento de 4 días con hora de inicio y sin hora de fin vale', !r.error, r.error);
+r = await insX(null, null, 30);
+ok('Hasta 30 días de más (31 en total) vale', !r.error, r.error);
+r = await insX(null, null, 31);
+ok('31 días de más se rechaza', !!r.error, r.error);
+r = await insX(null, null, -1);
+ok('Días negativos se rechazan', !!r.error, r.error);
+r = await insX(null, null, 7, 'semanal');
+ok('Que se repite cada semana y dura más de 6 días de más se rechaza', !!r.error, r.error);
+r = await insX(null, null, 6, 'semanal');
+ok('…con 6 días de más sí vale', !r.error, r.error);
+r = await insX(null, '06:00', 1);
+ok('Hora de fin sin hora de inicio sigue rechazándose', !!r.error, r.error);
+r = await q(`update public.eventos set dias_extra = 7 where id=$1`, [evTurno]);
+ok('Alargar una serie semanal por encima de 6 días se rechaza', !!r.error, r.error);
+r = await q(`update public.eventos set dias_extra = 0 where id=$1`, [evTurno]);
+ok('Quitar los días de más dejando 22:00–06:00 se rechaza', !!r.error, r.error);
+r = await q(`update public.eventos set dias_extra = 0, hora_fin = '23:30' where id=$1 returning id`, [evTurno]);
+ok('…pero sí cambiando también la hora', !r.error && r.rows.length === 1, r.error);
+await q(`update public.eventos set dias_extra = 1, hora_fin = '06:00' where id=$1`, [evTurno]);
+await como(U.tercero);
+r = await q(`update public.eventos set dias_extra = 2 where id=$1 returning id`, [evTurno]);
+ok('Un amigo no puede cambiar la duración de un evento de Paula', !r.error && r.rows.length === 0, r.error);
+r = await q(`select dias_extra from public.eventos where id=$1`, [evTurno]);
+ok('Quien está en el calendario ve la duración', r.rows[0]?.dias_extra === 1, JSON.stringify(r.rows));
+await como(U.jorge);
+r = await q(`select count(*)::int n from public.eventos where espacio_id=$1`, [eL8]);
+ok('Quien no es del calendario no ve ningún evento', r.rows[0].n === 0, JSON.stringify(r.rows));
+r = await q(`update public.eventos set dias_extra = 0 where espacio_id=$1 returning id`, [eL8]);
+ok('…ni puede cambiarlos', !r.error && r.rows.length === 0, r.error);
+await db.exec('reset role');
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -1122,6 +1170,19 @@ const mig10 = fs.readFileSync(process.env.SQL10_PATH || '/mnt/user-data/outputs/
 let e10 = null;
 try { await v11.exec(mig10); await v11.exec(mig10); } catch (e) { e10 = e.message; }
 ok('La migración 10 se aplica dos veces sin errores', !e10, e10);
+const mig11 = fs.readFileSync(process.env.SQL11_PATH || '/mnt/user-data/outputs/organizapp/sql/11_fecha_fin.sql', 'utf8');
+let e11 = null;
+try { await v11.exec(mig11); await v11.exec(mig11); } catch (e) { e11 = e.message; }
+ok('La migración 11 se aplica dos veces sin errores', !e11, e11);
+{
+  const ev = (await v11.query(`select id, espacio_id, owner_id from public.eventos limit 1`)).rows[0];
+  const ins = (hi, hf, ex) => v11.query(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,hora_fin,dias_extra,creado_por) values ($1,$2,'plan','N','2026-11-06',$3,$4,$5,$2)`, [ev.espacio_id, ev.owner_id, hi, hf, ex]).then(() => null, (e) => e.message);
+  ok('Migrada: el evento de siempre queda con 0 días de más', (await v11.query(`select dias_extra from public.eventos where id=$1`, [ev.id])).rows[0].dias_extra === 0);
+  ok('Migrada: 22:00–06:00 acabando al día siguiente vale', (await ins('22:00', '06:00', 1)) === null);
+  ok('Migrada: 22:00–06:00 el mismo día se rechaza', (await ins('22:00', '06:00', 0)) !== null);
+  await v11.query(`delete from public.eventos where titulo='N'`);
+  ok('Migrada: no queda la regla antigua de la hora de fin', (await v11.query(`select count(*)::int n from pg_constraint where conrelid='public.eventos'::regclass and contype='c' and pg_get_constraintdef(oid) like '%hora_fin >= hora_inicio%' and conname <> 'eventos_hora_fin_ok'`)).rows[0].n === 0);
+}
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -1132,10 +1193,11 @@ for (const [nombre, consulta] of [
   ['las columnas', `select table_name||'.'||column_name||':'||data_type||':'||is_nullable v from information_schema.columns where table_schema='public'`],
   ['las reglas de acceso', `select tablename||'.'||policyname||':'||cmd||':'||coalesce(qual,'')||':'||coalesce(with_check,'') v from pg_policies where schemaname='public'`],
   ['los permisos de funciones', `select routine_name||':'||grantee v from information_schema.routine_privileges where routine_schema='public' and grantee in ('anon','authenticated','PUBLIC')`],
+  ['las restricciones de eventos', `select pg_get_constraintdef(oid) v from pg_constraint where conrelid='public.eventos'::regclass and contype='c'`],
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09+10) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09+10+11) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

@@ -344,3 +344,11 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .chip-capa.nuevo-subtipo { border-style: dashed; opacity: 1; }
 .subtipo-lista { margin: .5rem 0; }
 .subtipo-lista[hidden] { display: none; }
+
+/* Eventos que acaban otro día */
+.fila-evento .sigue { color: var(--suave); font-size: .82rem; }
+.fila-evento.tl-ev .sigue { display: none; }
+.fecha-fin { margin: .25rem 0 .5rem; }
+.fecha-fin[hidden], .fecha-fin-boton[hidden] { display: none; }
+.fecha-fin-boton { margin: .1rem 0 .4rem; justify-self: start; }
+.fin-hint { margin: 2px 0 0; }

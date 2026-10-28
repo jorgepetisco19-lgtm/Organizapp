@@ -104,21 +104,55 @@ export function descripcionRepeticion(ev) {
   return `cada semana (${n.length > 1 ? `${n.slice(0, -1).join(', ')} y ${n[n.length - 1]}` : n[0]})`;
 }
 
-// Orden dentro de un día: primero los eventos sin hora, luego por hora
+// Días que dura un evento además del primero (0 = acaba el mismo día; 1 = acaba al día siguiente…)
+export const diasExtra = (ev) => Math.max(0, Number(ev && ev.dias_extra) || 0);
+// Último día de la ocurrencia que empieza en «fecha»
+export const fechaFinDe = (ev, fecha) => sumarDias(fecha || ev.fecha, diasExtra(ev));
+
+const minDe = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+// Qué parte de un evento de varios días se ve en un día concreto:
+//  'unico' (acaba el mismo día), 'primero', 'medio' o 'ultimo'
+// Tramo horario de esa parte dentro del día (en minutos), o null si ocupa «todo el día».
+export function tramoDia(x) {
+  const hi = hhmm(x.ev.hora_inicio), hf = hhmm(x.ev.hora_fin);
+  if (!hi) return null;
+  if (x.parte === 'primero') return { a: minDe(hi), b: 1440 };
+  if (x.parte === 'medio') return null;
+  if (x.parte === 'ultimo') return hf ? { a: 0, b: minDe(hf) } : null;
+  return { a: minDe(hi), b: hf ? minDe(hf) : null };
+}
+// Texto de la hora de una parte: «19:30–21:00», «22:00 →», «→ 06:00» o «Todo el día»
+export function textoHora(x) {
+  const hi = hhmm(x.ev.hora_inicio), hf = hhmm(x.ev.hora_fin);
+  if (!hi) return 'Todo el día';
+  if (x.parte === 'primero') return `${hi} →`;
+  if (x.parte === 'medio') return 'Todo el día';
+  if (x.parte === 'ultimo') return hf ? `→ ${hf}` : 'Todo el día';
+  return hi + (hf ? '–' + hf : '');
+}
+
+// Orden dentro de un día: primero los eventos sin hora (y los que vienen de ayer), luego por hora
 export function compararEventos(a, b) {
-  const ha = hhmm(a.ev.hora_inicio), hb = hhmm(b.ev.hora_inicio);
+  const clave = (x) => { const t = tramoDia(x); return t ? `${String(Math.floor(t.a / 60)).padStart(2, '0')}:${String(t.a % 60).padStart(2, '0')}` : ''; };
+  const ha = clave(a), hb = clave(b);
   if (ha !== hb) return ha < hb ? -1 : 1; // '' (sin hora) queda primero
   const t = (a.ev.titulo || '').localeCompare(b.ev.titulo || '', 'es');
   return t !== 0 ? t : String(a.ev.id).localeCompare(String(b.ev.id));
 }
 
-// Devuelve un Map fecha -> [{ev, fecha}] ordenado
+// Devuelve un Map día -> [{ev, fecha, dia, parte}] ordenado.
+// «fecha» es el día en que EMPIEZA esa ocurrencia (sirve para identificarla: hechas, excepciones…) y «dia» el día en que se muestra.
 export function expandirEventos(eventos, desde, hasta) {
   const mapa = new Map();
   for (const ev of eventos) {
-    for (const fecha of ocurrencias(ev, desde, hasta)) {
-      if (!mapa.has(fecha)) mapa.set(fecha, []);
-      mapa.get(fecha).push({ ev, fecha });
+    const extra = diasExtra(ev);
+    for (const fecha of ocurrencias(ev, sumarDias(desde, -extra), hasta)) {
+      for (let k = 0; k <= extra; k++) {
+        const dia = sumarDias(fecha, k);
+        if (dia < desde || dia > hasta) continue;
+        if (!mapa.has(dia)) mapa.set(dia, []);
+        mapa.get(dia).push({ ev, fecha, dia, parte: extra === 0 ? 'unico' : k === 0 ? 'primero' : k === extra ? 'ultimo' : 'medio' });
+      }
     }
   }
   for (const lista of mapa.values()) lista.sort(compararEventos);
@@ -436,7 +470,7 @@ export function plantillaMenu() {
 // Lee un archivo .ics y devuelve los eventos de hoy en adelante, ya en el formato de la app. Función pura (no toca pantalla ni red).
 // Las repeticiones semanales pasan a ser una serie (con sus días); el resto (diaria, mensual, anual, cada N semanas)
 // se convierte en fechas sueltas de los próximos meses. Lo que no se puede traducir se cuenta en «omitidos».
-export const LIMITES_ICS = { eventos: 500, dias: 120, porSerie: 60 };
+export const LIMITES_ICS = { eventos: 500, dias: 120, porSerie: 60, diasEvento: 30 };
 
 function desdoblarICS(texto) {
   const out = [];
@@ -562,11 +596,15 @@ export function leerICS(texto, { desde = hoyISO(), zona } = {}) {
     const inicio = ini && fechaICS(ini.valor, ini.params, zona);
     const titulo = (textoLimpioICS(una('SUMMARY')?.valor || '').replace(/\s*\n\s*/g, ' ') || '(sin título)').slice(0, 120);
     if (!inicio) { out.omitidos.push({ titulo, motivo: 'sin fecha de inicio válida' }); continue; }
-    let hora_fin = null, variosDias = 0;
+    let hora_fin = null, diasExtra = 0;
     const fin = una('DTEND') && fechaICS(una('DTEND').valor, una('DTEND').params, zona);
-    if (fin && inicio.todoElDia) variosDias = Math.max(0, diffDias(fin.fecha, inicio.fecha) - 1);
-    else if (fin && fin.hora && fin.fecha === inicio.fecha && inicio.hora && fin.hora > inicio.hora) hora_fin = fin.hora;
-    // si acaba al día siguiente, se queda sin hora de fin (la app no tiene eventos de varios días)
+    if (fin) {
+      const dif = diffDias(fin.fecha, inicio.fecha);
+      if (inicio.todoElDia) diasExtra = Math.max(0, dif - 1); // en los de día completo, el fin del .ics no cuenta (es el día siguiente al último)
+      else if (dif <= 0) { if (fin.hora && inicio.hora && fin.hora > inicio.hora) hora_fin = fin.hora; }
+      else if (fin.hora && fin.hora !== '00:00') { diasExtra = dif; hora_fin = fin.hora; } // acaba otro día a una hora
+      else diasExtra = dif - 1; // acaba justo a medianoche: el último día es el anterior
+    }
     const lugar = una('LOCATION') ? textoLimpioICS(una('LOCATION').valor) : '';
     const desc = una('DESCRIPTION') ? textoLimpioICS(una('DESCRIPTION').valor) : '';
     const notas = [lugar ? `Lugar: ${lugar}` : '', desc].filter(Boolean).join('\n').slice(0, 1000) || null;
@@ -574,7 +612,7 @@ export function leerICS(texto, { desde = hoyISO(), zona } = {}) {
     for (const p of c.props.filter((x) => x.nombre === 'EXDATE')) for (const v of p.valor.split(',')) { const f = fechaICS(v, p.params, zona); if (f) exd.push(f.fecha); }
     const rid = una('RECURRENCE-ID') && fechaICS(una('RECURRENCE-ID').valor, una('RECURRENCE-ID').params, zona);
     regs.push({
-      uid: una('UID')?.valor || '', titulo, fecha: inicio.fecha, hora_inicio: inicio.todoElDia ? null : inicio.hora, hora_fin, notas, variosDias,
+      uid: una('UID')?.valor || '', titulo, fecha: inicio.fecha, hora_inicio: inicio.todoElDia ? null : inicio.hora, hora_fin, notas, diasExtra,
       regla: una('RRULE') ? reglaICS(una('RRULE').valor) : null, exd, rid: rid ? rid.fecha : null, zonaUntil: zona,
     });
   }
@@ -585,15 +623,17 @@ export function leerICS(texto, { desde = hoyISO(), zona } = {}) {
   }
 
   const evs = [];
-  const poner = (e) => evs.push({ uid: e.uid, notas: null, variosDias: 0, excepciones: [], repeticion: null, dias_semana: null, repite_hasta: null, ...e });
+  const poner = (e) => evs.push({ uid: e.uid, notas: null, diasExtra: 0, excepciones: [], repeticion: null, dias_semana: null, repite_hasta: null, ...e });
   for (const r of regs) {
-    const base = { uid: r.uid, titulo: r.titulo, hora_inicio: r.hora_inicio, hora_fin: r.hora_fin, notas: r.notas, variosDias: r.variosDias };
+    const base = { uid: r.uid, titulo: r.titulo, hora_inicio: r.hora_inicio, hora_fin: r.hora_fin, notas: r.notas, diasExtra: r.diasExtra };
+    if (r.diasExtra > LIMITES_ICS.diasEvento) { out.omitidos.push({ titulo: r.titulo, motivo: `dura más de ${LIMITES_ICS.diasEvento} días` }); continue; }
     if (!r.regla || r.rid) { // evento suelto
-      if (r.fecha < desde) { out.pasados++; continue; }
+      if (sumarDias(r.fecha, r.diasExtra) < desde) { out.pasados++; continue; }
       poner({ ...base, fecha: r.fecha });
       continue;
     }
     const rg = r.regla;
+    if (r.diasExtra > 6 && rg.FREQ === 'WEEKLY' && (parseInt(rg.INTERVAL, 10) || 1) === 1) { out.omitidos.push({ titulo: r.titulo, motivo: 'se repite cada semana y dura más de 6 días' }); continue; }
     if (!reglaSoportada(rg, r.fecha)) { out.omitidos.push({ titulo: r.titulo, motivo: 'repetición que la app no sabe hacer (por ejemplo, «el primer lunes de cada mes»)' }); continue; }
     const hastaUntil = rg.UNTIL ? (fechaICS(rg.UNTIL, {}, r.zonaUntil)?.fecha || null) : null;
     const cuenta = rg.COUNT ? parseInt(rg.COUNT, 10) : 0;

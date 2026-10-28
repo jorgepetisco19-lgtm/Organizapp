@@ -147,7 +147,6 @@ create table if not exists public.eventos (
   creado       timestamptz not null default now(),
   actualizado  timestamptz not null default now(),
   check (hora_fin is null or hora_inicio is not null),
-  check (hora_fin is null or hora_fin >= hora_inicio),
   check (repite_hasta is null or repeticion is not null),
   check (repite_hasta is null or repite_hasta >= fecha)
 );
@@ -169,6 +168,24 @@ alter table public.eventos add constraint eventos_participantes_ok check (
 );
 
 alter table public.eventos add column if not exists subtipo_id uuid references public.subtipos(id) on delete set null;
+-- Eventos que acaban otro día (también si se repiten): «dias_extra» = días que dura de más (0 = acaba el mismo día)
+alter table public.eventos add column if not exists dias_extra smallint not null default 0;
+do $$
+declare r record;
+begin
+  for r in select conname from pg_constraint
+           where conrelid = 'public.eventos'::regclass and contype = 'c'
+             and pg_get_constraintdef(oid) like '%hora_fin >= hora_inicio%'
+  loop
+    execute format('alter table public.eventos drop constraint %I', r.conname);
+  end loop;
+end $$;
+alter table public.eventos drop constraint if exists eventos_dias_extra_ok;
+alter table public.eventos add constraint eventos_dias_extra_ok
+  check (dias_extra between 0 and 30 and (repeticion is null or dias_extra <= 6));
+alter table public.eventos drop constraint if exists eventos_hora_fin_ok;
+alter table public.eventos add constraint eventos_hora_fin_ok
+  check (hora_fin is null or hora_inicio is null or dias_extra > 0 or hora_fin >= hora_inicio);
 alter table public.eventos drop constraint if exists eventos_subtipo_ok;
 alter table public.eventos add constraint eventos_subtipo_ok check (subtipo_id is null or tipo = 'compromiso');
 create index if not exists eventos_subtipo_idx on public.eventos (subtipo_id) where subtipo_id is not null;
