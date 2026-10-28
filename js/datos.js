@@ -132,6 +132,15 @@ export const marcarPasosEvento = async (eventoId, hecha) =>
   ok(await sb.from('lineas').update({ hecha }).eq('evento_id', eventoId).select('id'));
 export const quitarMarcadasCompra = async (espacioId) =>
   ok(await sb.from('lineas').delete().eq('espacio_id', espacioId).is('evento_id', null).eq('hecha', true));
+// ---------- subtipos de cita (por calendario) ----------
+export const cargarSubtipos = async (espacioId) =>
+  ok(await sb.from('subtipos').select('*').eq('espacio_id', espacioId)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
+export const crearSubtipo = async (fila) => ok(await sb.from('subtipos').insert(fila).select('*'))[0];
+export const guardarSubtipo = async (id, campos) =>
+  exactamente(ok(await sb.from('subtipos').update(campos).eq('id', id).select('id')), 1);
+export const borrarSubtipo = async (id) =>
+  exactamente(ok(await sb.from('subtipos').delete().eq('id', id).select('id')), 1);
+
 export const guardarEvento = async (id, campos) =>
   exactamente(ok(await sb.from('eventos').update(campos).eq('id', id).select('id')), 1);
 export const borrarEvento = async (id) =>

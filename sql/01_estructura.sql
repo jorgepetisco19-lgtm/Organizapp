@@ -114,6 +114,18 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 create unique index if not exists invitaciones_amigo_idx on public.invitaciones (espacio_id, para_user) where para_user is not null;
 
+-- subtipos de cita (con su color), por calendario
+create table if not exists public.subtipos (
+  id          uuid primary key default gen_random_uuid(),
+  espacio_id  uuid not null references public.espacios(id) on delete cascade,
+  nombre      text not null check (char_length(btrim(nombre)) between 1 and 40),
+  color       text not null check (color ~ '^#[0-9a-fA-F]{6}$'),
+  creado_por  uuid references auth.users(id) on delete set null,
+  creado      timestamptz not null default now()
+);
+create unique index if not exists subtipos_nombre_idx on public.subtipos (espacio_id, lower(btrim(nombre)));
+alter table public.subtipos enable row level security;
+
 create table if not exists public.eventos (
   id           uuid primary key default gen_random_uuid(),
   espacio_id   uuid not null references public.espacios(id) on delete cascade,
@@ -155,6 +167,11 @@ alter table public.eventos add constraint eventos_participantes_ok check (
   participantes is null
   or (not compartido and cardinality(participantes) between 2 and 5 and owner_id = any(participantes))
 );
+
+alter table public.eventos add column if not exists subtipo_id uuid references public.subtipos(id) on delete set null;
+alter table public.eventos drop constraint if exists eventos_subtipo_ok;
+alter table public.eventos add constraint eventos_subtipo_ok check (subtipo_id is null or tipo = 'compromiso');
+create index if not exists eventos_subtipo_idx on public.eventos (subtipo_id) where subtipo_id is not null;
 
 -- Quien está en un evento de varias personas debe ser del calendario, sin repetirse, y quien lo añade debe poder editar su agenda
 -- (así un «amigo» no puede apuntar a otra persona en un evento).
@@ -759,12 +776,60 @@ drop policy if exists lineas_borrar on public.lineas;
 create policy lineas_borrar on public.lineas for delete to authenticated
   using (public.puede_editar_linea(espacio_id, evento_id));
 
+-- ---------- SUBTIPOS ----------
+-- Máximo 20 subtipos por calendario.
+create or replace function public.limitar_subtipos()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if (select count(*) from public.subtipos where espacio_id = new.espacio_id) >= 20 then
+    raise exception 'Este calendario ya tiene 20 subtipos.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists subtipos_limite on public.subtipos;
+create trigger subtipos_limite before insert on public.subtipos
+  for each row execute function public.limitar_subtipos();
+
+-- El subtipo de un evento tiene que ser de su mismo calendario.
+create or replace function public.validar_subtipo()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if new.subtipo_id is not null and not exists (
+    select 1 from public.subtipos where id = new.subtipo_id and espacio_id = new.espacio_id
+  ) then
+    raise exception 'Ese subtipo no es de este calendario.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists eventos_subtipo on public.eventos;
+create trigger eventos_subtipo before insert or update of subtipo_id, espacio_id on public.eventos
+  for each row execute function public.validar_subtipo();
+
+-- Subtipos: los ve cualquier persona del calendario; los crea cualquiera del calendario;
+-- los cambia o borra quien los creó o quien tiene rol «pareja».
+drop policy if exists subtipos_ver on public.subtipos;
+create policy subtipos_ver on public.subtipos for select to authenticated
+  using (public.es_miembro(espacio_id));
+
+drop policy if exists subtipos_crear on public.subtipos;
+create policy subtipos_crear on public.subtipos for insert to authenticated
+  with check (public.es_miembro(espacio_id) and creado_por = (select auth.uid()));
+
+drop policy if exists subtipos_editar on public.subtipos;
+create policy subtipos_editar on public.subtipos for update to authenticated
+  using (public.es_miembro(espacio_id) and (public.es_pareja(espacio_id) or creado_por = (select auth.uid())))
+  with check (public.es_miembro(espacio_id) and (public.es_pareja(espacio_id) or creado_por = (select auth.uid())));
+
+drop policy if exists subtipos_borrar on public.subtipos;
+create policy subtipos_borrar on public.subtipos for delete to authenticated
+  using (public.es_miembro(espacio_id) and (public.es_pareja(espacio_id) or creado_por = (select auth.uid())));
+
 -- ---------- PERMISOS ----------
 -- Primero se quita todo (también a "anon", que es quien no ha iniciado sesión)
 -- y luego se da solo lo necesario a "authenticated" (quien ha iniciado sesión).
 
 revoke all on public.perfiles, public.espacios, public.miembros,
-              public.invitaciones, public.eventos, public.menu, public.amistades, public.lineas
+              public.invitaciones, public.eventos, public.menu, public.amistades, public.lineas, public.subtipos
   from public, anon, authenticated;
 
 grant select on public.espacios, public.miembros to authenticated;
@@ -775,6 +840,8 @@ grant select, insert, delete on public.invitaciones to authenticated;
 grant select, insert, update, delete on public.eventos, public.menu to authenticated;
 grant select, insert, delete on public.lineas to authenticated;
 grant update (texto, hecha, orden) on public.lineas to authenticated;
+grant select, insert, delete on public.subtipos to authenticated;
+grant update (nombre, color) on public.subtipos to authenticated;
 
 -- Borra TU cuenta y todo lo tuyo. Solo puede llamarla la propia persona (borra la cuenta de quien llama, nunca otra).
 --  - Calendarios que creaste y nadie más usa: se borran enteros.
@@ -822,7 +889,7 @@ revoke all on function
   public.tocar_actualizado(),
   public.invitaciones_enviadas(uuid), public.invitar_amigo(uuid, uuid, text), public.salir_espacio(uuid),
   public.quitar_miembro(uuid, uuid), public.eliminar_espacio(uuid), public.renombrar_espacio(uuid, text), public.cambiar_mi_color(uuid, text), public.cambiar_rol(uuid, uuid, text),
-  public.color_libre(uuid, text), public.limpiar_miembro(uuid, uuid), public.puede_editar_linea(uuid, uuid), public.limitar_lineas(), public.borrar_mi_cuenta(), public.validar_participantes(), public.puede_editar_evento(uuid, uuid, uuid, uuid[]),
+  public.color_libre(uuid, text), public.limpiar_miembro(uuid, uuid), public.puede_editar_linea(uuid, uuid), public.limitar_lineas(), public.borrar_mi_cuenta(), public.validar_participantes(), public.puede_editar_evento(uuid, uuid, uuid, uuid[]), public.limitar_subtipos(), public.validar_subtipo(),
   public.buscar_codigo(text), public.pedir_amistad(text), public.responder_amistad(uuid, boolean),
   public.quitar_amistad(uuid), public.mis_amistades(), public.regenerar_codigo(), public.normalizar_codigo(text), public.generar_codigo()
   from public, anon, authenticated;

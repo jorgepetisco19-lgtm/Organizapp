@@ -332,3 +332,15 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .fila-import-ics .tipo-fila { margin: 0 0 4px 1.8rem; width: auto; max-width: 14rem; min-height: 36px; font-size: .88rem; }
 .fila-import-ics .fila-import { border-bottom: 0; }
 .fila-import-ics.ya { opacity: .55; }
+
+/* subtipos de cita */
+.subtipo-punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--s); margin-right: 5px; flex: none; }
+.dia .chip .subtipo-punto { width: 6px; height: 6px; margin-right: 3px; vertical-align: middle; }
+.subtipo-punto.grande { width: 16px; height: 16px; margin: 0; }
+.fila-evento .subtipo { justify-self: start; font-size: .78rem; padding: 0 8px; border-radius: 999px; border: 1px solid var(--s); background: color-mix(in srgb, var(--s) 20%, var(--superficie)); }
+.lista-subtipos { list-style: none; margin: .5rem 0; padding: 0; display: grid; gap: 6px; }
+.lista-subtipos li { display: flex; align-items: center; gap: 10px; }
+.lista-subtipos .nombre { flex: 1; overflow-wrap: anywhere; }
+.chip-capa.nuevo-subtipo { border-style: dashed; opacity: 1; }
+.subtipo-lista { margin: .5rem 0; }
+.subtipo-lista[hidden] { display: none; }

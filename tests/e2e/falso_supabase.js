@@ -9,8 +9,8 @@ var supabase = (function () {
     tercero: { id: '00000000-0000-0000-0000-00000000000c', email: 'tercero@test.com', user_metadata: { full_name: 'Tercero' } },
     cuarto: { id: '00000000-0000-0000-0000-00000000000d', email: 'cuarto@test.com', user_metadata: { full_name: 'Cuarto Nuevo' } },
   };
-  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [], lineas: [] });
-  const cargar = () => { try { const d = JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); if (!d.lineas) d.lineas = []; return d; } catch { return vacia(); } };
+  const vacia = () => ({ perfiles: [], espacios: [], miembros: [], invitaciones: [], eventos: [], menu: [], amistades: [], lineas: [], subtipos: [] });
+  const cargar = () => { try { const d = JSON.parse(localStorage.getItem(CLAVE_DB)) || vacia(); if (!d.lineas) d.lineas = []; if (!d.subtipos) d.subtipos = []; return d; } catch { return vacia(); } };
   const guardar = (db) => localStorage.setItem(CLAVE_DB, JSON.stringify(db));
   const sesionActual = () => { const k = localStorage.getItem(CLAVE_SES); return k ? USUARIOS[k] : null; };
   const uuid = () => crypto.randomUUID();
@@ -86,6 +86,7 @@ var supabase = (function () {
         const quitar = tabla.filter((r) => this.fil.every((f) => f(r)));
         db[this.t] = tabla.filter((r) => !quitar.includes(r));
         if (this.t === 'eventos') db.lineas = db.lineas.filter((l) => !quitar.some((e) => e.id === l.evento_id));
+        if (this.t === 'subtipos') db.eventos.forEach((e) => { if (quitar.some((q) => q.id === e.subtipo_id)) e.subtipo_id = null; });
         guardar(db);
         return this.retorna ? dev(quitar) : { data: null, error: null };
       }
@@ -176,7 +177,7 @@ var supabase = (function () {
       const e = db.espacios.find((x) => x.id === p_espacio && x.creado_por === u.id);
       if (!e) return err('Solo quien creó el calendario puede borrarlo.');
       db.espacios = db.espacios.filter((x) => x.id !== p_espacio);
-      for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
+      for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas', 'subtipos']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
       guardar(db); return { data: null, error: null };
     },
     borrar_mi_cuenta() {
@@ -185,7 +186,7 @@ var supabase = (function () {
         const otros = db.miembros.filter((m) => m.espacio_id === e.id && m.user_id !== u.id);
         if (!otros.length) {
           db.espacios = db.espacios.filter((x) => x.id !== e.id);
-          for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas']) db[t] = db[t].filter((x) => x.espacio_id !== e.id);
+          for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas', 'subtipos']) db[t] = db[t].filter((x) => x.espacio_id !== e.id);
           continue;
         }
         const nuevo = otros.find((m) => m.relacion === 'pareja');

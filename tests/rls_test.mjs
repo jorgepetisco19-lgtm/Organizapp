@@ -987,6 +987,102 @@ r = await q(`select owner_id, participantes from public.eventos where espacio_id
 ok('…y el evento queda como evento normal de la otra persona', r.rows.length === 1 && r.rows[0].participantes === null && r.rows[0].owner_id === Z[2].id, JSON.stringify(r.rows));
 await db.exec('reset role');
 
+
+// ---------- 10f. Subtipos de cita ----------
+console.log('\n10f. subtipos');
+await db.exec('reset role');
+const eL6 = '00000000-0000-0000-0000-0000000000fc', eL7 = '00000000-0000-0000-0000-0000000000fd';
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Subtipos',$2),($3,'Otro de Paula',$2)`, [eL6, U.paula.id, eL7]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values ($1,$2,'pareja','#111111'),($1,$3,'amigo','#222222'),($1,$4,'amigo','#333333'),($5,$2,'pareja','#111111')`, [eL6, U.paula.id, U.tercero.id, U.amigo.id, eL7]);
+const mkSub = (quien, esp, nombre, color = '#ef4444') => q(`insert into public.subtipos(espacio_id,nombre,color,creado_por) values ($1,$2,$3,$4) returning id`, [esp, nombre, color, quien.id]);
+await como(U.paula);
+r = await mkSub(U.paula, eL6, 'Médica');
+ok('Paula (pareja) crea un subtipo', !r.error && r.rows.length === 1, r.error);
+const subMed = r.rows[0]?.id;
+await como(U.tercero);
+r = await mkSub(U.tercero, eL6, 'Peluquería', '#a855f7');
+ok('Un «amigo» también puede crear subtipos en su calendario', !r.error && r.rows.length === 1, r.error);
+const subPel = r.rows[0]?.id;
+r = await mkSub(U.amigo, eL6, 'Otra cosa');
+ok('No se puede crear un subtipo diciendo que lo creó otra persona', !!r.error, r.error);
+r = await mkSub(U.tercero, eL6, 'MÉDICA ');
+ok('No se repite un nombre (da igual mayúsculas y espacios)', !!r.error, r.error);
+r = await mkSub(U.tercero, eL6, 'Dentista', 'rojo');
+ok('Un color que no es #rrggbb se rechaza', !!r.error, r.error);
+r = await mkSub(U.tercero, eL6, '   ');
+ok('Un nombre vacío se rechaza', !!r.error, r.error);
+r = await mkSub(U.tercero, eL6, 'x'.repeat(41));
+ok('Un nombre de más de 40 letras se rechaza', !!r.error, r.error);
+r = await q(`select count(*)::int n from public.subtipos where espacio_id=$1`, [eL6]);
+ok('Las personas del calendario ven los subtipos de todas', r.rows[0].n === 2, JSON.stringify(r.rows));
+// edición: quien lo creó o la pareja
+r = await q(`update public.subtipos set color='#00ff00' where id=$1 returning id`, [subMed]);
+ok('Un «amigo» no puede cambiar el subtipo de Paula', !r.error && r.rows.length === 0, r.error);
+r = await q(`delete from public.subtipos where id=$1 returning id`, [subMed]);
+ok('…ni borrarlo', !r.error && r.rows.length === 0, r.error);
+r = await q(`update public.subtipos set nombre='Peluquería y barbería', color='#0ea5e9' where id=$1 returning id`, [subPel]);
+ok('Pero sí cambia el suyo', !r.error && r.rows.length === 1, r.error);
+r = await q(`update public.subtipos set espacio_id=$1 where id=$2 returning id`, [eL7, subPel]);
+ok('Un subtipo no se puede cambiar de calendario', falla(r, 'permission denied') || (!r.error && r.rows.length === 0), r.error);
+await como(U.amigo);
+r = await q(`update public.subtipos set nombre='hack' where id=$1 returning id`, [subPel]);
+ok('Otro «amigo» tampoco cambia el de Tercero', !r.error && r.rows.length === 0, r.error);
+await como(U.paula);
+r = await q(`update public.subtipos set nombre='Peluquería' where id=$1 returning id`, [subPel]);
+ok('Paula (pareja) sí puede cambiar el de Tercero', !r.error && r.rows.length === 1, r.error);
+// quien está fuera
+await como(U.jorge);
+r = await q(`select count(*)::int n from public.subtipos where espacio_id=$1`, [eL6]);
+ok('Quien no es del calendario no ve ningún subtipo', r.rows[0].n === 0, JSON.stringify(r.rows));
+r = await mkSub(U.jorge, eL6, 'Intruso');
+ok('…ni puede crear uno', !!r.error, r.error);
+r = await q(`update public.subtipos set nombre='hack' where id=$1 returning id`, [subMed]);
+ok('…ni cambiarlo', !r.error && r.rows.length === 0, r.error);
+r = await q(`delete from public.subtipos where id=$1 returning id`, [subMed]);
+ok('…ni borrarlo', !r.error && r.rows.length === 0, r.error);
+await como('anon');
+r = await q(`select * from public.subtipos`);
+ok('Sin sesión no se ve nada', falla(r, 'permission denied'), r.error);
+// eventos con subtipo
+await como(U.tercero);
+const insC = (tipo, sub, esp = eL6, owner = U.tercero.id) => q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,subtipo_id,creado_por) values ($1,$2,$3,'Cita X','2026-11-10',$4,$2) returning id`, [esp, owner, tipo, sub]);
+r = await insC('compromiso', subMed);
+ok('Una cita puede llevar un subtipo del calendario', !r.error && r.rows.length === 1, r.error);
+const evCita = r.rows[0]?.id;
+r = await insC('plan', subMed);
+ok('Un plan no puede llevar subtipo (solo las citas)', !!r.error, r.error);
+r = await insC('deporte', subMed);
+ok('Un deporte tampoco', !!r.error, r.error);
+await como(U.paula);
+r = await mkSub(U.paula, eL7, 'De otro calendario');
+const subOtro = r.rows[0]?.id;
+await como(U.tercero);
+r = await insC('compromiso', subOtro);
+ok('Un subtipo de otro calendario no se puede usar', !!r.error && /calendario/i.test(r.error), r.error);
+r = await q(`update public.eventos set tipo='plan' where id=$1 returning id`, [evCita]);
+ok('Cambiar la cita a plan sin quitar el subtipo se rechaza', !!r.error, r.error);
+r = await q(`update public.eventos set tipo='plan', subtipo_id=null where id=$1 returning id`, [evCita]);
+ok('…pero sí quitándolo a la vez', !r.error && r.rows.length === 1, r.error);
+await q(`update public.eventos set tipo='compromiso', subtipo_id=$2 where id=$1`, [evCita, subMed]);
+// borrar un subtipo deja sus citas sin subtipo
+await como(U.paula);
+r = await q(`delete from public.subtipos where id=$1 returning id`, [subMed]);
+ok('Paula borra el subtipo «Médica»', !r.error && r.rows.length === 1, r.error);
+r = await q(`select tipo, subtipo_id from public.eventos where id=$1`, [evCita]);
+ok('La cita sigue ahí, sin subtipo', r.rows.length === 1 && r.rows[0].subtipo_id === null && r.rows[0].tipo === 'compromiso', JSON.stringify(r.rows));
+// límite de 20
+await como(U.paula);
+let nSub = 0, ultimoError = '';
+for (let i = 0; i < 25; i++) { const x = await mkSub(U.paula, eL6, `Tipo ${i}`); if (!x.error) nSub++; else { ultimoError = x.error; break; } }
+r = await q(`select count(*)::int n from public.subtipos where espacio_id=$1`, [eL6]);
+ok('No se pueden tener más de 20 subtipos en un calendario', r.rows[0].n === 20 && /20/.test(ultimoError), `${r.rows[0].n} · ${ultimoError}`);
+// si borra el calendario, se van sus subtipos
+await db.exec('reset role');
+await db.query(`delete from public.espacios where id=$1`, [eL6]);
+r = await q(`select count(*)::int n from public.subtipos where espacio_id=$1`, [eL6]);
+ok('Al borrar el calendario se borran sus subtipos', r.rows[0].n === 0, JSON.stringify(r.rows));
+await db.exec('reset role');
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -1022,6 +1118,10 @@ const mig9 = fs.readFileSync(process.env.SQL9_PATH || '/mnt/user-data/outputs/or
 let e9 = null;
 try { await v11.exec(mig9); await v11.exec(mig9); } catch (e) { e9 = e.message; }
 ok('La migración 09 se aplica dos veces sin errores', !e9, e9);
+const mig10 = fs.readFileSync(process.env.SQL10_PATH || '/mnt/user-data/outputs/organizapp/sql/10_subtipos.sql', 'utf8');
+let e10 = null;
+try { await v11.exec(mig10); await v11.exec(mig10); } catch (e) { e10 = e.message; }
+ok('La migración 10 se aplica dos veces sin errores', !e10, e10);
 const cm = (await v11.query(`select user_id, color from public.miembros order by color`)).rows;
 ok('Los miembros que ya existían conservan su color (el de su perfil)', cm.length === 2 && cm.some((x) => x.color === '#10b981') && cm.some((x) => x.color === '#f97316'), JSON.stringify(cm));
 ok('Los eventos y las invitaciones de siempre siguen ahí', (await v11.query('select count(*)::int n from public.eventos')).rows[0].n === 1 && (await v11.query('select count(*)::int n from public.invitaciones')).rows[0].n === 1);
@@ -1035,7 +1135,7 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09+10) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

@@ -86,6 +86,7 @@ const S = {
   semana: inicioSemana(hoyInicial),
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
   compra: null, compraEsp: null, // lista de la compra del calendario abierto (null = sin cargar)
+  subtipos: [], // subtipos de cita del calendario abierto
   version: '…', instalar: null,
 };
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
@@ -104,6 +105,7 @@ const etiquetaEv = (ev) => (ev.compartido ? etiquetaTodos() : esVarios(ev) ? nom
 const colorEv = (ev) => (ev.compartido || esVarios(ev) ? COLOR_AMBOS : colorDe(ev.owner_id));
 const enColumna = (ev, id) => (esVarios(ev) ? ev.participantes.includes(id) : ev.owner_id === id);
 const eventoVisible = (e) => e.compartido || (esVarios(e) ? e.participantes.some((id) => S.capas.has(id)) : S.capas.has(e.owner_id));
+const subtipoDe = (ev) => (ev.subtipo_id ? S.subtipos.find((x) => x.id === ev.subtipo_id) || null : null);
 const puedeEditarCapa = (ownerId) => ownerId === S.user.id || S.relacion === 'pareja';
 // Los de varias personas los edita quien los creó o cualquier persona con rol «pareja»; el resto, como siempre.
 const puedeEditarEv = (ev) => (esVarios(ev) ? S.relacion === 'pareja' || ev.creado_por === S.user.id : puedeEditarCapa(ev.owner_id));
@@ -250,12 +252,13 @@ async function cargarCompra() {
 // Deja listo el calendario "esp": personas, invitaciones enviadas y qué capas se ven (se recuerda por calendario).
 async function prepararEspacio(esp) {
   if (!esp) {
-    Object.assign(S, { espacio: null, relacion: null, miembros: [], enviadas: [], capas: new Set(), eventos: [], menu: [], menuMap: new Map(), rango: null, compra: null, compraEsp: null });
+    Object.assign(S, { espacio: null, relacion: null, miembros: [], enviadas: [], capas: new Set(), eventos: [], menu: [], menuMap: new Map(), rango: null, compra: null, compraEsp: null, subtipos: [] });
     return;
   }
   const d = await D.cargarEspacio(S.user, esp);
   Object.assign(S, { espacio: esp, relacion: esp.relacion, miembros: d.miembros, enviadas: d.enviadas, eventos: [], menu: [], menuMap: new Map(), rango: null, compra: null, compraEsp: null });
   guardarLocal('espacio_actual', esp.id);
+  try { S.subtipos = await D.cargarSubtipos(esp.id); } catch { S.subtipos = []; } // (si falta el SQL 10, la app sigue funcionando sin subtipos)
   const guardadas = leerLocal(`capas_${esp.id}`, null);
   const ids = new Set(S.miembros.map((m) => m.id));
   const validas = Array.isArray(guardadas) ? guardadas.filter((i) => ids.has(i)) : [];
@@ -492,12 +495,14 @@ function filaEvento({ ev, fecha }, compacta = false, colorCol = null) {
   const t = TIPOS.find((x) => x.id === ev.tipo);
   const hora = ev.hora_inicio ? hhmm(ev.hora_inicio) + (ev.hora_fin ? '–' + hhmm(ev.hora_fin) : '') : 'Todo el día';
   const hecha = esHecha(ev, fecha);
+  const st = subtipoDe(ev);
   const pasos = !ev.repeticion && ev.pasos && ev.pasos.length ? ev.pasos : null;
   return el('button', { type: 'button', class: `fila-evento${compacta ? ' compacta' : ''}${hecha ? ' hecha' : ''}`, style: { '--c': m.color }, onclick: () => abrirEditorEvento({ ev, ocurrencia: fecha }) },
     el('span', { class: 'hora' }, hora),
     el('span', { class: 'cuerpo' },
-      el('span', { class: 'tit' }, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: `Se repite ${descripcionRepeticion(ev)}` }, ' ↻') : null,
+      el('span', { class: 'tit' }, st ? el('span', { class: 'subtipo-punto', style: { '--s': st.color }, title: st.nombre }) : null, `${hecha ? '✓ ' : ''}${t.icono} ${ev.titulo}`, ev.repeticion ? el('span', { class: 'rep', title: `Se repite ${descripcionRepeticion(ev)}` }, ' ↻') : null,
         pasos ? el('span', { class: 'progreso' }, ` ${pasos.filter((x) => x.hecha).length}/${pasos.length}`) : null),
+      st && !compacta ? el('span', { class: 'subtipo', style: { '--s': st.color } }, st.nombre) : null,
       ev.notas ? el('span', { class: 'notas' }, ev.notas) : null),
     S.miembros.length > 1 && !compacta ? el('span', { class: 'quien' }, m.nombre) : null);
 }
@@ -928,7 +933,7 @@ function vistaMes() {
           onclick: () => { S.diaSel = dia; render(); },
         },
           el('span', { class: 'num' }, Number(dia.slice(8))),
-          lista.slice(0, 3).map(({ ev }) => el('span', { class: 'chip', style: { '--c': colorEv(ev) } }, ev.titulo)),
+          lista.slice(0, 3).map(({ ev }) => { const st = subtipoDe(ev); return el('span', { class: 'chip', style: { '--c': colorEv(ev) } }, st ? el('span', { class: 'subtipo-punto', style: { '--s': st.color }, title: st.nombre }) : null, ev.titulo); }),
           lista.length > 3 ? el('span', { class: 'mas' }, `+${lista.length - 3}`) : null);
       })),
     el('section', { class: 'agenda' },
@@ -1257,6 +1262,7 @@ function vistaMas() {
         await cargarTodo();
       }) }, 'Guardar')),
     tarjetaCalendario(),
+    tarjetaSubtipos(),
     tarjetaAmigos(),
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
@@ -1351,6 +1357,58 @@ async function leerVersionPublicada() {
   } catch { /* sin conexión: se queda como está */ }
 }
 
+// ---------- subtipos de cita ----------
+const puedeEditarSubtipo = (st) => S.relacion === 'pareja' || st.creado_por === S.user.id;
+// Crear o cambiar un subtipo (nombre + color). alGuardar recibe el subtipo creado o cambiado.
+function abrirEditorSubtipo({ sub = null, alGuardar = null } = {}) {
+  let color = sub?.color || PALETA[S.subtipos.length % PALETA.length];
+  const nombre = el('input', { type: 'text', maxLength: 40, placeholder: 'Ej.: Médica, Peluquería', value: sub?.nombre || '', 'aria-label': 'Nombre del subtipo' });
+  const sw = PALETA.map((c) => el('button', {
+    type: 'button', class: 'muestra', style: { '--c': c }, 'aria-label': `Color ${c}`, 'aria-pressed': String(c === color),
+    onclick: () => { color = c; sw.forEach((b, i) => b.setAttribute('aria-pressed', String(PALETA[i] === color))); },
+  }));
+  const guardar = (btn) => conCarga(btn, async () => {
+    const n = nombre.value.trim();
+    if (!n) throw new Error('Ponle un nombre al subtipo.');
+    if (S.subtipos.some((x) => x.id !== sub?.id && x.nombre.trim().toLowerCase() === n.toLowerCase())) throw new Error('Ya hay un subtipo con ese nombre.');
+    let r;
+    if (sub) { await D.guardarSubtipo(sub.id, { nombre: n, color }); r = { ...sub, nombre: n, color }; S.subtipos = S.subtipos.map((x) => (x.id === sub.id ? r : x)); }
+    else { r = await D.crearSubtipo({ espacio_id: S.espacio.id, nombre: n, color, creado_por: S.user.id }); S.subtipos = [...S.subtipos, r]; }
+    S.subtipos.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+    cerrar(); if (alGuardar) alGuardar(r); else render();
+    if (!alGuardar) await cargarVista(true);
+  });
+  const borrar = sub && puedeEditarSubtipo(sub) ? (btn) => {
+    if (!confirm(`¿Borrar el subtipo «${sub.nombre}»? Las citas que lo tengan se quedan sin subtipo (no se borran).`)) return null;
+    return conCarga(btn, async () => {
+      await D.borrarSubtipo(sub.id); S.subtipos = S.subtipos.filter((x) => x.id !== sub.id);
+      cerrar(); if (alGuardar) alGuardar({ id: null }); else render();
+      await cargarVista(true);
+    });
+  } : null;
+  const cerrar = modal(sub ? 'Cambiar subtipo' : 'Nuevo subtipo', el('div', { class: 'formulario' },
+    el('label', {}, 'Nombre', nombre),
+    el('div', { class: 'etq' }, 'Color'), el('div', { class: 'muestras' }, sw),
+    el('p', { class: 'suave' }, 'Lo ve y lo puede usar todo el calendario. El borde del evento sigue siendo el color de la persona; el subtipo añade un punto de su color.'),
+    el('div', { class: 'fila-botones fin' },
+      borrar ? el('button', { type: 'button', class: 'peligro', onclick: (e) => borrar(e.currentTarget) }, 'Borrar') : null,
+      el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'),
+      el('button', { type: 'button', class: 'primario', onclick: (e) => guardar(e.currentTarget) }, 'Guardar'))));
+  setTimeout(() => nombre.focus(), 50);
+}
+
+function tarjetaSubtipos() {
+  return el('section', { class: 'tarjeta', id: 'subtipos' },
+    el('h2', {}, 'Subtipos de cita'),
+    el('p', { class: 'suave' }, `Para distinguir tus citas (médica, peluquería…) con un color. Son de «${S.espacio.nombre}» y los ve todo el calendario.`),
+    S.subtipos.length
+      ? el('ul', { class: 'lista-subtipos' }, S.subtipos.map((st) => el('li', {},
+        el('span', { class: 'subtipo-punto grande', style: { '--s': st.color } }), el('span', { class: 'nombre' }, st.nombre),
+        puedeEditarSubtipo(st) ? el('button', { type: 'button', class: 'pequeno', onclick: () => abrirEditorSubtipo({ sub: st }) }, 'Cambiar') : null)))
+      : el('p', { class: 'suave' }, 'Todavía no hay ninguno.'),
+    el('div', { class: 'fila-botones' }, el('button', { type: 'button', onclick: () => abrirEditorSubtipo() }, '＋ Nuevo subtipo')));
+}
+
 // ---------- editor de eventos ----------
 function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const nuevo = !ev;
@@ -1359,6 +1417,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   let para = ev ? (ev.compartido ? 'todos' : ev.owner_id) : S.user.id; // id de persona o 'todos' (calendarios de dos personas, o sin permiso para elegir varias)
   // Con 3 o más personas, quien tiene rol «pareja» puede elegir varias a la vez (un solo evento para ese grupo).
   const todosIds = S.miembros.map((m) => m.id);
+  let subtipoSel = ev?.subtipo_id || null;
   const modoVarios = S.miembros.length >= 3 && (S.relacion === 'pareja' || (ev && esVarios(ev)));
   const paraInicial = new Set(ev ? (ev.compartido ? todosIds : esVarios(ev) ? ev.participantes : [ev.owner_id]) : [S.user.id]);
   const paraSet = new Set(paraInicial);
@@ -1463,8 +1522,26 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   function actualizarSecciones() {
     pasosUI.hidden = !(tipo === 'tarea' && repSel.value === '');
     if (hechaUI) hechaUI.hidden = tipo !== 'tarea';
+    subtipoUI.hidden = tipo !== 'compromiso';
   }
   pintarPasos();
+
+  // Subtipo (solo en las citas): chips con el color de cada subtipo del calendario.
+  const subtipoUI = el('div', { class: 'subtipo-lista', hidden: tipo !== 'compromiso' });
+  function pintarSubtipos() {
+    const opciones = [{ id: null, nombre: 'Sin subtipo', color: '#94a3b8' }, ...S.subtipos];
+    subtipoUI.replaceChildren(...[
+      el('span', { class: 'etq' }, 'Subtipo'),
+      editable || ev?.subtipo_id ? el('div', { class: 'chips', role: 'group', 'aria-label': 'Subtipo de cita' },
+        ...opciones.filter((o) => editable || o.id === subtipoSel).map((o) => el('button', {
+          type: 'button', class: 'chip-capa', 'aria-pressed': String(o.id === subtipoSel), style: { '--c': o.color }, disabled: !editable,
+          onclick: () => { subtipoSel = o.id; pintarSubtipos(); },
+        }, el('span', { class: 'punto' }), o.nombre)),
+        editable ? el('button', { type: 'button', class: 'chip-capa nuevo-subtipo', 'aria-pressed': 'true', style: { '--c': '#94a3b8' },
+          onclick: () => abrirEditorSubtipo({ alGuardar: (nuevo) => { subtipoSel = nuevo.id; pintarSubtipos(); } }) }, '＋ Nuevo') : null) : null,
+    ].filter(Boolean));
+  }
+  pintarSubtipos();
 
   // Al crear: copiar también a otros calendarios tuyos (como evento tuyo), para no apuntarlo dos veces.
   const otrosCals = nuevo ? S.espacios.filter((e) => e.id !== S.espacio.id) : [];
@@ -1505,6 +1582,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     // Para quién es: una persona, todas («compartido») o un grupo (participantes). «participantes» solo se escribe si hace falta.
     const quien = modoVarios ? destinoDe(paraSet, ev?.owner_id) : { compartido: para === 'todos', participantes: null, owner: para === 'todos' ? (nuevo ? S.user.id : ev.owner_id) : para };
     campos.compartido = quien.compartido;
+    const subNuevo = tipo === 'compromiso' ? subtipoSel : null;
+    if (nuevo ? subNuevo : subNuevo !== (ev.subtipo_id ?? null)) campos.subtipo_id = subNuevo;
     if (nuevo ? quien.participantes : JSON.stringify(quien.participantes) !== JSON.stringify(ev.participantes ?? null)) campos.participantes = quien.participantes;
     // «dias_semana» solo se escribe si hace falta (así guardar un evento de siempre nunca depende de esa columna)
     const diasNuevos = rep ? normalizarDias([...diasSel], f) : null;
@@ -1554,6 +1633,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     !editable ? el('p', { class: 'suave' }, esVarios(ev) ? 'Solo lectura: lo edita quien lo creó o quien tiene rol «pareja».' : 'Solo lectura: este evento es de otra persona.') : null,
     el('div', { class: 'tipos-fila', role: 'group', 'aria-label': 'Tipo' }, tipoBtns),
     el('label', {}, 'Título', titulo),
+    subtipoUI,
     quienUI,
     el('label', {}, ev?.repeticion ? 'Empieza el' : 'Fecha', fechaIn),
     el('div', { class: 'dos' }, el('label', {}, 'Desde', iniIn), el('label', {}, 'Hasta', finIn)),
