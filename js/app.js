@@ -107,6 +107,34 @@ const eventoVisible = (e) => e.compartido || (esVarios(e) ? e.participantes.some
 const puedeEditarCapa = (ownerId) => ownerId === S.user.id || S.relacion === 'pareja';
 // Los de varias personas los edita quien los creó o cualquier persona con rol «pareja»; el resto, como siempre.
 const puedeEditarEv = (ev) => (esVarios(ev) ? S.relacion === 'pareja' || ev.creado_por === S.user.id : puedeEditarCapa(ev.owner_id));
+// Campo de hora propio: con teclado numérico escribes 1930 y sale 19:30 (el selector de reloj del móvil es lento y a veces se ve cortado).
+const horaValida = (v) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+function campoHora(props = {}) {
+  const dar = (v) => {
+    let d = String(v).replace(/\D/g, '').slice(0, 4);
+    if (d.length >= 1 && d.length < 4 && d[0] > '2') d = '0' + d; // 9 → 09, 930 → 09:30
+    return d.length > 2 ? `${d.slice(0, 2)}:${d.slice(2)}` : d;
+  };
+  const inp = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'off', maxLength: 5, placeholder: 'HH:MM', class: 'hora-campo', ...props, value: dar(props.value || '') });
+  inp.addEventListener('input', () => {
+    const antes = inp.value;
+    let d = antes.replace(/\D/g, '').slice(0, 4);
+    // al borrar, no se vuelve a añadir lo que se acaba de quitar
+    inp.value = d.length > 2 ? `${d.slice(0, 2)}:${d.slice(2)}` : d;
+    inp.classList.remove('invalido');
+  });
+  inp.addEventListener('blur', () => {
+    let d = inp.value.replace(/\D/g, '');
+    if (!d) { inp.classList.remove('invalido'); return; }
+    if (d.length === 1) d = `0${d}00`;                                  // 9 → 09:00
+    else if (d.length === 2) d += '00';                                // 19 → 19:00
+    else if (d.length === 3) d = d[0] > '2' ? `0${d}` : `${d}0`;       // 930 → 09:30 · 193 → 19:30
+    inp.value = `${d.slice(0, 2)}:${d.slice(2, 4)}`;
+    inp.classList.toggle('invalido', !horaValida(inp.value));
+  });
+  return inp;
+}
+
 // De «para quién» (un conjunto de personas del calendario) a los campos del evento:
 // una persona → suyo; todas → «compartido»; un grupo → un solo evento con participantes.
 function destinoDe(ids, ownerActual = null) {
@@ -291,6 +319,7 @@ function pantallaLogin() {
     el('p', { class: 'suave' }, 'Calendario compartido para planificar las comidas, el deporte y las tareas.'),
     S.errorLogin ? el('p', { class: 'error-txt', role: 'alert' }, S.errorLogin) : null,
     el('button', { class: 'primario grande', onclick: (e) => conCarga(e.currentTarget, () => D.iniciarSesion()) }, 'Entrar con Google'),
+    botonInstalar(true),
     enlacesLegales());
 }
 
@@ -320,6 +349,7 @@ function pantallaBienvenida() {
       el('p', { class: 'suave' }, 'Después podrás invitar a tu pareja o a tus amigos.'),
       el('button', { class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(await D.crearEspacio(nombreIn.value.trim() || 'Nuestro calendario')); }) }, 'Crear calendario')),
     tarjetaAmigos(),
+    botonInstalar(true),
     el('div', { class: 'fila-botones' },
       el('button', { onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(); }) }, '🔄 Comprobar invitaciones')),
     el('p', {}, el('button', { class: 'enlace', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
@@ -1287,9 +1317,9 @@ function abrirBorrarCuenta() {
 // ---------- instalar como app ----------
 const estaInstalada = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
-function botonInstalar() {
-  if (estaInstalada()) return el('p', { class: 'suave' }, '✅ Estás usando la app instalada.');
-  return el('div', { class: 'fila-botones' }, el('button', { class: 'primario', onclick: async () => {
+function botonInstalar(discreto = false) { // discreto: en la entrada y la bienvenida, sin competir con el botón principal
+  if (estaInstalada()) return discreto ? null : el('p', { class: 'suave' }, '✅ Estás usando la app instalada.');
+  return el('div', { class: `fila-botones${discreto ? ' centrado' : ''}` }, el('button', { class: discreto ? '' : 'primario', onclick: async () => {
     if (S.instalar) {
       const ev = S.instalar; S.instalar = null;
       try { await ev.prompt(); await ev.userChoice; } catch { /* cancelado */ }
@@ -1340,8 +1370,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
 
   const titulo = el('input', { type: 'text', maxLength: 120, placeholder: 'Ej.: Pilates, Cine, Hacer la crema', value: ev?.titulo || '', disabled: !editable, 'aria-label': 'Título' });
   const fechaIn = el('input', { type: 'date', value: ev ? ev.fecha : (fecha || hoyISO()), disabled: !editable, 'aria-label': 'Fecha' });
-  const iniIn = el('input', { type: 'time', value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
-  const finIn = el('input', { type: 'time', value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
+  const iniIn = campoHora({ value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
+  const finIn = campoHora({ value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
   const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; diasWrap.hidden = repSel.value !== 'semanal'; pintarDias(); actualizarSecciones(); } },
     [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || '') === v }, n)));
   const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
@@ -1462,6 +1492,8 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     const rep = repSel.value, hasta = hastaIn.value;
     if (!t) return aviso('Ponle un título.', true);
     if (!esFechaISO(f)) return aviso('Elige una fecha.', true);
+    if (hi && !horaValida(hi)) return aviso('La hora de inicio no es válida (ejemplo: 19:30).', true);
+    if (hf && !horaValida(hf)) return aviso('La hora de fin no es válida (ejemplo: 21:00).', true);
     if (hf && !hi) return aviso('Si pones hora de fin, pon también la de inicio.', true);
     if (hi && hf && hf < hi) return aviso('La hora de fin es anterior a la de inicio.', true);
     if (rep && hasta && hasta < f) return aviso('«Repetir hasta» es anterior a la fecha.', true);
@@ -1799,7 +1831,7 @@ function abrirEditorMenu({ fecha, ownerId }) {
     campos = {};
     cuerpoFranjas.replaceChildren(...FRANJAS.map((f) => {
       const b = borrador[id][f.id];
-      const hora = el('input', { type: 'time', value: b.hora, disabled: !editable, 'aria-label': `Hora de ${f.nombre}` });
+      const hora = campoHora({ value: b.hora, disabled: !editable, 'aria-label': `Hora de ${f.nombre}` });
       const texto = el('textarea', { rows: 2, maxLength: 1000, value: b.texto, disabled: !editable, placeholder: editable ? 'Un plato por línea' : '', 'aria-label': f.nombre });
       campos[f.id] = { hora, texto };
       return el('div', { class: 'franja-edit' }, el('div', { class: 'franja-cab' }, el('strong', {}, f.nombre), hora), texto);
@@ -1809,6 +1841,7 @@ function abrirEditorMenu({ fecha, ownerId }) {
 
   const guardar = (btn) => conCarga(btn, async () => {
     leer();
+    for (const m of personas) for (const f of FRANJAS) { const h = borrador[m.id][f.id].hora; if (h && !horaValida(h)) throw new Error(`La hora de «${f.nombre}» no es válida (ejemplo: 14:00).`); }
     const subir = [], quitar = [];
     for (const m of personas) {
       if (!puedeEditarCapa(m.id)) continue;
@@ -1907,7 +1940,7 @@ function zonaPlanSemanal(plan, cerrar) {
   const hoy = hoyISO();
   const l = inicioSemana(hoy);
   const lunesIn = el('input', { type: 'date', value: l < hoy ? sumarDias(l, 7) : l, 'aria-label': 'Lunes en que empieza la primera semana' });
-  const horaIn = el('input', { type: 'time', value: '21:00', 'aria-label': 'Hora de las tareas de preparación' });
+  const horaIn = campoHora({ value: '21:00', 'aria-label': 'Hora de las tareas de preparación' });
   const hayPrevio = plan.filas.some((f) => f.previo);
   const tareasChk = el('input', { type: 'checkbox', checked: hayPrevio, disabled: !hayPrevio, onchange: () => recalcular() });
   const semChk = plan.semanas.map((s) => el('input', { type: 'checkbox', checked: true, onchange: () => recalcular() }));
@@ -1929,6 +1962,7 @@ function zonaPlanSemanal(plan, cerrar) {
   function calcular() {
     const lunes = lunesIn.value;
     if (!esFechaISO(lunes) || diaSemana(lunes) !== 0) return { error: 'Elige un lunes: es el día en que empieza la primera semana del archivo.' };
+    if (horaIn.value && !horaValida(horaIn.value)) return { error: 'La hora de las tareas no es válida (ejemplo: 21:00).' };
     const semanas = plan.semanas.filter((_, i) => semChk[i].checked);
     const personas = new Set(plan.personas.filter((n) => mapeo[n]));
     if (!semanas.length) return { error: 'Marca al menos una semana.' };
@@ -2107,9 +2141,9 @@ function iniciar() {
   leerVersionPublicada();
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault(); S.instalar = e;
-    if (S.tab === 'mas' && S.espacio && !document.querySelector('.modal-fondo')) render();
+    if ((S.tab === 'mas' || !S.espacio) && !document.querySelector('.modal-fondo') && !document.querySelector('.bienvenida input:focus')) render();
   });
-  window.addEventListener('appinstalled', () => { S.instalar = null; if (S.tab === 'mas' && S.espacio) render(); });
+  window.addEventListener('appinstalled', () => { S.instalar = null; if (S.tab === 'mas' || !S.espacio) render(); });
   render();
   D.alCambiarSesion((evento, sesion) => {
     // No se llama a Supabase dentro de este aviso (podría bloquearse): se aplaza un instante.

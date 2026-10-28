@@ -57,6 +57,7 @@ label { display: block; margin: .6rem 0; font-size: .92rem; color: var(--suave);
 label > input, label > select, label > textarea { margin-top: .25rem; color: var(--texto); }
 label.check { display: flex; align-items: center; gap: 8px; color: var(--texto); font-size: 1rem; margin: .35rem 0; }
 label.check input { width: 22px; height: 22px; margin: 0; }
+.fila-botones.centrado { justify-content: center; }
 .fila-botones { display: flex; flex-wrap: wrap; gap: 8px; margin: .6rem 0; }
 .fila-botones.fin { justify-content: flex-end; }
 .fila-botones.columna { flex-direction: column; }
@@ -176,7 +177,9 @@ label.check input { width: 22px; height: 22px; margin: 0; }
 .quien-lista { margin: .5rem 0; }
 .franja-edit { margin: 10px 0; }
 .franja-cab { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
-.franja-cab input[type="time"] { width: 130px; }
+.franja-cab input.hora-campo { width: 110px; text-align: center; }
+input.hora-campo { text-align: center; font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+input.hora-campo.invalido { border-color: var(--peligro); }
 
 /* aviso temporal */
 .aviso { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 80px); transform: translateX(-50%); z-index: 60; max-width: min(92vw, 520px); background: #222; color: #fff; padding: 10px 16px; border-radius: 12px; opacity: 0; pointer-events: none; transition: opacity .2s; }

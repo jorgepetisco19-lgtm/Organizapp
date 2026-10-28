@@ -13,7 +13,7 @@ export const TIPOS = [
   { id: 'deporte', nombre: 'Deporte', icono: '🏃' },
   { id: 'plan', nombre: 'Plan', icono: '🎟️' },
   { id: 'tarea', nombre: 'Tarea', icono: '✅' },
-  { id: 'compromiso', nombre: 'Compromiso', icono: '📌' },
+  { id: 'compromiso', nombre: 'Cita', icono: '📌' },
 ];
 
 export const PALETA = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#ef4444', '#eab308', '#06b6d4', '#ec4899'];
