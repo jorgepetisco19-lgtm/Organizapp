@@ -1,5 +1,6 @@
 // Todo lo que habla con Supabase está aquí. La pantalla (app.js) no toca la base de datos directamente.
-import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
+import { SUPABASE_URL, SUPABASE_KEY, REDIRECT_NATIVO } from './config.js';
+import { esNativa, iniciarNativo, abrirEnNavegador, cerrarNavegador } from './nativo.js';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
@@ -24,8 +25,33 @@ function exactamente(data, n, mensaje) {
 }
 
 // ---------- sesión ----------
-export const iniciarSesion = async () =>
-  ok(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }));
+// En la web: Google se abre en esta misma pestaña. En la app de Android: en el navegador del sistema (Google no deja
+// iniciar sesión dentro de una app) y vuelve con un enlace propio de la app (completarLoginNativo).
+export async function iniciarSesion() {
+  if (!esNativa()) {
+    ok(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }));
+    return;
+  }
+  const r = ok(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: REDIRECT_NATIVO, skipBrowserRedirect: true } }));
+  if (!r || !r.url) throw new Error('No se pudo preparar el inicio de sesión.');
+  await iniciarNativo();
+  await abrirEnNavegador(r.url);
+}
+// Recibe el enlace con el que el navegador devuelve a la app: io.github…organizapp://auth?code=…
+// Devuelve false si el enlace no es de este inicio de sesión.
+export async function completarLoginNativo(url) {
+  if (!String(url).startsWith(REDIRECT_NATIVO)) return false;
+  const q = new URL(url);
+  const p = new URLSearchParams(q.search || '');
+  const h = new URLSearchParams((q.hash || '').replace(/^#/, ''));
+  const desc = p.get('error_description') || h.get('error_description');
+  if (desc) throw new Error('No se pudo iniciar sesión: ' + desc.replace(/\+/g, ' '));
+  const code = p.get('code');
+  if (!code) return false;
+  ok(await sb.auth.exchangeCodeForSession(code));
+  await cerrarNavegador();
+  return true;
+}
 export const cerrarSesion = async () => ok(await sb.auth.signOut());
 // Borra la cuenta y todo lo suyo en la base (función 07). Después se cierra la sesión solo en este móvil: la cuenta ya no existe.
 export async function borrarMiCuenta() {
@@ -92,6 +118,10 @@ export const quitarAmistad = async (id) => ok(await sb.rpc('quitar_amistad', { p
 export const regenerarCodigo = async () => ok(await sb.rpc('regenerar_codigo'));
 
 // ---------- eventos y menú ----------
+// La pantalla se apunta aquí para saber cuándo cambian los eventos (así reprograma los avisos del móvil).
+let alCambiarEventosCb = () => {};
+export const alCambiarEventos = (cb) => { alCambiarEventosCb = cb; };
+const eventosCambiaron = () => { try { alCambiarEventosCb(); } catch { /* no debe afectar al guardado */ } };
 export async function cargarRango(espacioId, desde, hasta) {
   // Un evento de varios días puede haber empezado hasta 30 días antes de «desde» (y seguir en curso), así que se piden unos días de más.
   const antes = new Date(`${desde}T00:00:00Z`); antes.setUTCDate(antes.getUTCDate() - 30);
@@ -103,6 +133,12 @@ export async function cargarRango(espacioId, desde, hasta) {
   ]);
   return { eventos: ok(ev), menu: ok(mn) };
 }
+// Solo los eventos (sin menú) de un calendario entre dos fechas, para programar los avisos del móvil.
+export async function cargarEventosRango(espacioId, desde, hasta) {
+  const antes = new Date(`${desde}T00:00:00Z`); antes.setUTCDate(antes.getUTCDate() - 30);
+  return ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).lte('fecha', hasta)
+    .or(`fecha.gte.${antes.toISOString().slice(0, 10)},repeticion.not.is.null`));
+}
 export async function cargarMenu(espacioId, desde, hasta) {
   return ok(await sb.from('menu').select('*').eq('espacio_id', espacioId).gte('fecha', desde).lte('fecha', hasta));
 }
@@ -111,6 +147,7 @@ export const eventosDe = async (espacioId, ownerId) =>
   ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).eq('owner_id', ownerId));
 export async function crearEventos(filas) {
   for (let i = 0; i < filas.length; i += 300) ok(await sb.from('eventos').insert(filas.slice(i, i + 300)));
+  eventosCambiaron();
 }
 // Todos los eventos del calendario que quien llama puede ver (para detectar los que ya están al importar)
 export const eventosEspacio = async (espacioId) => ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId));
@@ -144,10 +181,14 @@ export const guardarSubtipo = async (id, campos) =>
 export const borrarSubtipo = async (id) =>
   exactamente(ok(await sb.from('subtipos').delete().eq('id', id).select('id')), 1);
 
-export const guardarEvento = async (id, campos) =>
+export async function guardarEvento(id, campos) {
   exactamente(ok(await sb.from('eventos').update(campos).eq('id', id).select('id')), 1);
-export const borrarEvento = async (id) =>
+  eventosCambiaron();
+}
+export async function borrarEvento(id) {
   exactamente(ok(await sb.from('eventos').delete().eq('id', id).select('id')), 1);
+  eventosCambiaron();
+}
 
 export async function guardarMenu(filas) {
   for (let i = 0; i < filas.length; i += 200) {

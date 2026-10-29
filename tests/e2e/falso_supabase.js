@@ -282,7 +282,18 @@ var supabase = (function () {
       return {
         auth: {
           onAuthStateChange(cb) { oyentes.push(cb); const s = sesionActual(); setTimeout(() => cb('INITIAL_SESSION', s ? { user: s } : null), 0); return { data: { subscription: { unsubscribe() {} } } }; },
-          async signInWithOAuth() { localStorage.setItem(CLAVE_SES, localStorage.getItem('falso_entrar_como') || 'jorge'); avisar('SIGNED_IN'); return { data: {}, error: null }; },
+          // En la web entra directamente. En la app de Android (skipBrowserRedirect) devuelve la dirección que se abre en el
+          // navegador y se entra al llegar el código por exchangeCodeForSession, como hace Supabase de verdad.
+          async signInWithOAuth(o) {
+            const opc = (o && o.options) || {};
+            if (opc.skipBrowserRedirect) { window.__oauth = { redirectTo: opc.redirectTo, provider: o.provider }; return { data: { url: 'https://falso.supabase.co/auth/v1/authorize?provider=google' }, error: null }; }
+            localStorage.setItem(CLAVE_SES, localStorage.getItem('falso_entrar_como') || 'jorge'); avisar('SIGNED_IN'); return { data: {}, error: null };
+          },
+          async exchangeCodeForSession(code) {
+            window.__codigos = (window.__codigos || []).concat(code);
+            if (code !== 'codigo-bueno') return { data: null, error: { message: 'invalid flow state' } };
+            localStorage.setItem(CLAVE_SES, localStorage.getItem('falso_entrar_como') || 'jorge'); avisar('SIGNED_IN'); return { data: {}, error: null };
+          },
           async signOut() { localStorage.removeItem(CLAVE_SES); avisar('SIGNED_OUT'); return { error: null }; },
         },
         from: (t) => new Consulta(t),

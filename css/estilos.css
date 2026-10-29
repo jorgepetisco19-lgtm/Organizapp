@@ -352,3 +352,6 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .fecha-fin[hidden], .fecha-fin-boton[hidden] { display: none; }
 .fecha-fin-boton { margin: .1rem 0 .4rem; justify-self: start; }
 .fin-hint { margin: 2px 0 0; }
+
+/* Aviso de versión nueva (app de Android) */
+.nueva-version { font-weight: 700; color: var(--acento); }

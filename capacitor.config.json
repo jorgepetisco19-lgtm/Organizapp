@@ -1,0 +1,14 @@
+{
+  "appId": "io.github.jorgepetisco19lgtm.organizapp",
+  "appName": "Organizapp",
+  "webDir": "www",
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_organizapp",
+      "iconColor": "#2563EB"
+    },
+    "SystemBars": {
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

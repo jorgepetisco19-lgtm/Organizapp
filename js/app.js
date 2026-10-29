@@ -8,6 +8,9 @@ import {
   ocurrencias, diasExtra, fechaFinDe, tramoDia, textoHora, normalizarDias, descripcionRepeticion, nombreDia, leerICS, LIMITES_ICS,
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
+import * as N from './nativo.js';
+import { planificarAvisos, AVISO_MINUTOS, AVISO_MIN_DEFECTO, AVISO_DIAS } from './avisos.js';
+import { URL_APP, URL_DESCARGA } from './config.js';
 
 // ---------- utilidades de pantalla ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -37,6 +40,17 @@ const leerLocal = (k, def) => {
   try { const v = localStorage.getItem('org_' + k); return v == null ? def : JSON.parse(v); } catch { return def; }
 };
 
+// Enlace público de la web (en la app de Android la página vive en el propio móvil, así que se usa la dirección real)
+const urlPublica = () => (N.esNativa() ? URL_APP : location.origin + location.pathname);
+// Menú «Compartir» del móvil; si no existe (ordenador), se copia al portapapeles.
+async function compartir({ title, text, url }, textoCopiado) {
+  try {
+    if (N.esNativa()) await N.compartirTexto({ title, text, url });
+    else if (navigator.share) await navigator.share({ title, text, url });
+    else { await navigator.clipboard.writeText([text, url].filter(Boolean).join('\n')); aviso(textoCopiado); }
+  } catch { /* cancelado */ }
+}
+
 let avisoT;
 function aviso(texto, error = false) {
   const a = $('#aviso');
@@ -51,10 +65,13 @@ async function conCarga(boton, fn) {
   try { await fn(); } catch (e) { aviso(e.message || String(e), true); } finally { if (boton) boton.disabled = false; }
 }
 
+const pilaModales = []; // las ventanas abiertas, para que el botón «atrás» del móvil cierre la última
 function modal(titulo, cuerpo, alCerrar) {
   const fondo = el('div', { class: 'modal-fondo', onclick: (e) => { if (e.target === fondo) cerrar(); } });
   const alTecla = (e) => { if (e.key === 'Escape') cerrar(); };
   function cerrar() {
+    const pos = pilaModales.indexOf(cerrar);
+    if (pos >= 0) pilaModales.splice(pos, 1);
     document.removeEventListener('keydown', alTecla);
     fondo.remove();
     document.body.classList.toggle('sin-scroll', $('#modales').children.length > 0);
@@ -66,6 +83,7 @@ function modal(titulo, cuerpo, alCerrar) {
       el('button', { type: 'button', class: 'icono', 'aria-label': 'Cerrar', onclick: cerrar }, '✕')),
     el('div', { class: 'modal-cuerpo' }, cuerpo)));
   document.addEventListener('keydown', alTecla);
+  pilaModales.push(cerrar);
   $('#modales').append(fondo);
   document.body.classList.add('sin-scroll');
   return cerrar;
@@ -87,7 +105,7 @@ const S = {
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
   compra: null, compraEsp: null, // lista de la compra del calendario abierto (null = sin cargar)
   subtipos: [], // subtipos de cita del calendario abierto
-  version: '…', instalar: null,
+  version: '…', instalar: null, versionNueva: null, avisos: null,
 };
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
 const miembro = (id) => S.miembros.find((m) => m.id === id);
@@ -278,6 +296,7 @@ async function cargarTodo(preferido = null) {
     const quiero = preferido || S.espacio?.id || leerLocal('espacio_actual', null);
     await prepararEspacio(S.espacios.find((e) => e.id === quiero) || S.espacios[0] || null);
     S.cargando = false;
+    pedirReprogramar(500);
     if (S.espacio) return await cargarVista(true);
   } catch (e) {
     S.error = e.message || String(e);
@@ -312,7 +331,9 @@ function pantallaCarga() {
 }
 
 function enlacesLegales() {
-  return el('p', { class: 'legal' }, el('a', { href: 'privacidad.html' }, 'Privacidad'), ' · ', el('a', { href: 'terminos.html' }, 'Condiciones'));
+  // En la app de Android se abren en el navegador (si no, la página se quedaría sin botón «atrás» que funcione)
+  const enlace = (pagina, texto) => el('a', { href: pagina, onclick: (e) => { if (N.esNativa()) { e.preventDefault(); N.abrirEnNavegador(URL_APP + pagina).catch(() => aviso('No se pudo abrir la página.', true)); } } }, texto);
+  return el('p', { class: 'legal' }, enlace('privacidad.html', 'Privacidad'), ' · ', enlace('terminos.html', 'Condiciones'));
 }
 
 function pantallaLogin() {
@@ -1110,8 +1131,7 @@ function tarjetaAmigos() {
         try { await navigator.clipboard.writeText(verCodigo(codigo)); aviso('Código copiado'); } catch { aviso('No se pudo copiar.', true); }
       } }, '📋 Copiar'),
       el('button', { onclick: async () => {
-        const texto = `Mi código de amigo en Organizapp: ${verCodigo(codigo)}\n${location.origin + location.pathname}`;
-        try { if (navigator.share) await navigator.share({ text: texto }); else { await navigator.clipboard.writeText(texto); aviso('Mensaje copiado'); } } catch { /* cancelado */ }
+        await compartir({ text: `Mi código de amigo en Organizapp: ${verCodigo(codigo)}`, url: urlPublica() }, 'Mensaje copiado');
       } }, '🔗 Compartir'),
       el('button', { onclick: (e) => {
         if (!confirm('Tu código actual dejará de funcionar y se creará otro. Tus amigos actuales no cambian. ¿Cambiarlo?')) return;
@@ -1269,6 +1289,7 @@ function vistaMas() {
     tarjetaCalendario(),
     tarjetaSubtipos(),
     tarjetaAmigos(),
+    N.esNativa() ? tarjetaAvisos() : null,
     el('section', { class: 'tarjeta' },
       el('h2', {}, 'Menú'),
       el('p', { class: 'suave' }, 'Importa comidas desde un Excel. Descarga una plantilla, rellénala y súbela.'),
@@ -1282,17 +1303,13 @@ function vistaMas() {
       el('label', {}, 'Cómo se ve la agenda', vistaSel),
       botonInstalar(),
       el('div', { class: 'fila-botones' },
+        el('button', { onclick: () => compartir({ title: 'Organizapp', url: urlPublica() }, 'Enlace copiado') }, '🔗 Compartir enlace'),
         el('button', { onclick: async () => {
-          const url = location.origin + location.pathname;
-          try {
-            if (navigator.share) await navigator.share({ title: 'Organizapp', url });
-            else { await navigator.clipboard.writeText(url); aviso('Enlace copiado'); }
-          } catch { /* cancelado */ }
-        } }, '🔗 Compartir enlace'),
-        el('button', { onclick: async () => {
+          if (N.esNativa()) return buscarVersionNueva(true);
           try { const reg = await navigator.serviceWorker.getRegistration(); await reg?.update(); aviso('Buscando actualización…'); } catch { aviso('No se pudo comprobar.', true); }
         } }, '🔄 Buscar actualización')),
       el('p', { class: 'suave' }, 'Versión ', el('span', { class: 'version-txt' }, S.version)),
+      S.versionNueva ? el('p', { class: 'nueva-version' }, `Hay una versión nueva (${S.versionNueva}). `, el('button', { class: 'enlace', onclick: () => N.abrirEnNavegador(URL_DESCARGA) }, 'Descargar')) : null,
       el('button', { class: 'peligro', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
     el('section', { class: 'tarjeta', id: 'mi-cuenta' },
       el('h2', {}, 'Tu cuenta y tus datos'),
@@ -1326,7 +1343,7 @@ function abrirBorrarCuenta() {
 }
 
 // ---------- instalar como app ----------
-const estaInstalada = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const estaInstalada = () => N.esNativa() || window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
 function botonInstalar(discreto = false) { // discreto: en la entrada y la bienvenida, sin competir con el botón principal
   if (estaInstalada()) return discreto ? null : el('p', { class: 'suave' }, '✅ Estás usando la app instalada.');
@@ -2052,8 +2069,13 @@ const TEXTO_LIMPIAR = 'Borrar lo que ya hubiera en esas fechas y no esté en el 
 function descargarPlantilla(tipo = 'sencilla') {
   const plan = tipo === 'plan';
   const bytes = crearXlsx(plan ? plantillaPlanSemanal() : plantillaMenu());
+  const nombre = plan ? 'plantilla-plan-semanal-organizapp.xlsx' : 'plantilla-menu-organizapp.xlsx';
+  if (N.esNativa()) { // en la app de Android no hay «descargas» del navegador: se abre el menú Compartir (guardar, abrir con Excel…)
+    N.compartirArchivo(nombre, bytes, 'Plantilla de Organizapp').catch((e) => { if (!/cancel/i.test(String(e && e.message))) aviso('No se pudo preparar el archivo.', true); });
+    return;
+  }
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-  const a = el('a', { href: url, download: plan ? 'plantilla-plan-semanal-organizapp.xlsx' : 'plantilla-menu-organizapp.xlsx' });
+  const a = el('a', { href: url, download: nombre });
   document.body.append(a);
   a.click();
   a.remove();
@@ -2249,7 +2271,7 @@ function abrirImportar() {
 
 // ---------- arranque ----------
 function registrarSW() {
-  if (!('serviceWorker' in navigator)) return;
+  if (N.esNativa() || !('serviceWorker' in navigator)) return; // la app de Android lleva los archivos dentro: no necesita service worker
   const habiaControlador = !!navigator.serviceWorker.controller;
   let recargado = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -2260,6 +2282,121 @@ function registrarSW() {
   });
   navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready)
     .then((r) => r.active && r.active.postMessage('version')).catch(() => { /* sin SW: la app funciona igual */ });
+}
+
+// ---------- app de Android: avisos, botón atrás, versión ----------
+let avisosT = 0, avisosOcupado = false;
+function pedirReprogramar(espera = 1500) {
+  if (!N.esNativa()) return;
+  clearTimeout(avisosT);
+  avisosT = setTimeout(reprogramarAvisos, espera);
+}
+
+const textoEstadoAvisos = () => {
+  if (!leerLocal('avisos_on', true)) return 'Avisos desactivados.';
+  const a = S.avisos;
+  if (!a) return 'Preparando los avisos…';
+  if (a.permiso === 'denied') return '⚠️ Android tiene bloqueadas las notificaciones de Organizapp. Actívalas en Ajustes del móvil → Aplicaciones → Organizapp → Notificaciones.';
+  if (a.permiso !== 'granted') return 'Falta el permiso de notificaciones. Pulsa «Probar aviso» para concederlo.';
+  if (a.error) return 'No se pudieron preparar los avisos: ' + a.error;
+  if (!a.n) return `No hay eventos con hora en los próximos ${AVISO_DIAS} días.`;
+  return `${a.n} ${a.n === 1 ? 'aviso programado' : 'avisos programados'} para los próximos ${AVISO_DIAS} días.`;
+};
+function pintarEstadoAvisos() {
+  document.querySelectorAll('.estado-avisos').forEach((n) => { n.textContent = textoEstadoAvisos(); });
+}
+
+// Vuelve a calcular y programar los avisos de TODOS mis calendarios. Si algo falla al leer, no toca los que ya había.
+async function reprogramarAvisos() {
+  if (!N.esNativa() || !S.user) return;
+  if (avisosOcupado) return pedirReprogramar(3000);
+  avisosOcupado = true;
+  try {
+    await N.iniciarNativo();
+    if (!leerLocal('avisos_on', true)) { await N.cancelarAvisos(); S.avisos = { n: 0, permiso: 'granted' }; return; }
+    const primera = !leerLocal('avisos_pedido', false);
+    const permiso = await N.permisoAvisos(primera);
+    if (primera) guardarLocal('avisos_pedido', true);
+    if (permiso !== 'granted') { S.avisos = { n: 0, permiso }; return; }
+    const hoy = hoyISO();
+    const eventos = [];
+    for (const esp of S.espacios) eventos.push(...await D.cargarEventosRango(esp.id, hoy, sumarDias(hoy, AVISO_DIAS)));
+    const lista = planificarAvisos(eventos, { userId: S.user.id, minutos: Number(leerLocal('avisos_min', AVISO_MIN_DEFECTO)) });
+    await N.programarAvisos(lista);
+    S.avisos = { n: lista.length, permiso };
+  } catch (e) {
+    S.avisos = { n: 0, permiso: 'granted', error: e.message || String(e) };
+  } finally {
+    avisosOcupado = false;
+    pintarEstadoAvisos();
+  }
+}
+
+function tarjetaAvisos() {
+  const onIn = el('input', { type: 'checkbox', checked: leerLocal('avisos_on', true), 'aria-label': 'Avisarme antes de mis eventos', onchange: () => conCarga(onIn, async () => {
+    guardarLocal('avisos_on', onIn.checked);
+    if (onIn.checked) {
+      const permiso = await N.permisoAvisos(true);
+      if (permiso !== 'granted') S.avisos = { n: 0, permiso };
+    }
+    pintarEstadoAvisos();
+    pedirReprogramar(0);
+  }) });
+  const minSel = el('select', { 'aria-label': 'Cuánto antes avisar', onchange: () => { guardarLocal('avisos_min', Number(minSel.value)); aviso('Ajuste guardado'); pedirReprogramar(0); } },
+    AVISO_MINUTOS.map((m) => el('option', { value: m, selected: Number(leerLocal('avisos_min', AVISO_MIN_DEFECTO)) === m }, m >= 60 ? `${m / 60} hora antes` : `${m} minutos antes`)));
+  return el('section', { class: 'tarjeta', id: 'avisos' },
+    el('h2', {}, 'Avisos'),
+    el('label', { class: 'check-fila' }, onIn, el('span', {}, 'Avisarme antes de mis eventos')),
+    el('label', {}, 'Cuánto antes', minSel),
+    el('p', { class: 'suave estado-avisos' }, textoEstadoAvisos()),
+    el('p', { class: 'suave' }, 'Avisa de los eventos con hora en los que participas: los tuyos, los de todos y los de tus grupos. Si otra persona añade o cambia algo, tu móvil lo sabrá cuando abras la app.'),
+    el('div', { class: 'fila-botones' },
+      el('button', { onclick: (e) => conCarga(e.currentTarget, async () => {
+        const permiso = await N.permisoAvisos(true);
+        if (permiso !== 'granted') { S.avisos = { n: 0, permiso }; pintarEstadoAvisos(); throw new Error('Las notificaciones están bloqueadas para Organizapp en el móvil.'); }
+        await N.avisoDePrueba(5);
+        aviso('Aviso de prueba en 5 segundos. Si no llega, mira el ahorro de batería.');
+        pedirReprogramar(6000);
+      }) }, '🔔 Probar aviso')),
+    el('p', { class: 'suave' }, 'Si algún aviso no llega, en los ajustes del móvil quita el ahorro de batería a Organizapp.'));
+}
+
+// ¿Hay una APK más nueva que la instalada? Se compara con la versión publicada en la web.
+async function buscarVersionNueva(manual = false) {
+  const v = await N.versionPublicada();
+  if (!v) { if (manual) aviso('No se pudo comprobar. ¿Tienes conexión?', true); return; }
+  const hay = Number(v) > Number(S.version);
+  S.versionNueva = hay ? v : null;
+  if (S.tab === 'mas' && !document.querySelector('.modal-fondo')) render();
+  if (!manual) { if (hay) aviso(`Hay una versión nueva (${v}). La encuentras en Más → La app.`); return; }
+  if (!hay) return aviso('Tienes la última versión.');
+  const cerrar = modal('Versión nueva', el('div', { class: 'formulario' },
+    el('p', {}, `Tienes la ${S.version} y ya está la ${v}.`),
+    el('p', { class: 'suave' }, 'Se abrirá la página de descargas: baja «organizapp.apk», ábrela y pulsa Instalar. Se actualiza encima de la que tienes, sin perder nada.'),
+    el('div', { class: 'fila-botones' },
+      el('button', { type: 'button', class: 'primario', onclick: () => { cerrar(); N.abrirEnNavegador(URL_DESCARGA); } }, 'Ir a la descarga'),
+      el('button', { type: 'button', onclick: () => cerrar() }, 'Ahora no'))));
+}
+
+// Botón «atrás» del móvil: cierra la ventana abierta; si no hay, vuelve a Inicio; si ya estás en Inicio, sale.
+function alAtras() {
+  const ultima = pilaModales[pilaModales.length - 1];
+  if (ultima) return ultima();
+  if (S.user && S.espacio && S.tab !== 'inicio') { S.tab = 'inicio'; return cargarVista(); }
+  N.salirDeLaApp();
+}
+
+async function iniciarNativoApp() {
+  if (!N.esNativa()) return;
+  try {
+    await N.iniciarNativo();
+    N.alPulsarAtras(alAtras);
+    await N.alAbrirEnlace(async (url) => {
+      try { await D.completarLoginNativo(url); }
+      catch (e) { if (!S.user) { S.errorLogin = e.message || String(e); render(); } }
+    });
+    setTimeout(() => buscarVersionNueva(false), 5000);
+  } catch (e) { S.errorLogin = 'No se pudo preparar la app: ' + (e.message || e); render(); }
 }
 
 function render() {
@@ -2295,6 +2432,8 @@ function iniciar() {
   aplicarTema();
   registrarSW();
   leerVersionPublicada();
+  iniciarNativoApp();
+  D.alCambiarEventos(() => pedirReprogramar(2000));
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault(); S.instalar = e;
     if ((S.tab === 'mas' || !S.espacio) && !document.querySelector('.modal-fondo') && !document.querySelector('.bienvenida input:focus')) render();
@@ -2308,7 +2447,7 @@ function iniciar() {
   let oculta = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) oculta = Date.now();
-    else if (S.espacio && Date.now() - oculta > 30000) { cargarVista(true); recargarAmistades(); }
+    else if (S.espacio && Date.now() - oculta > 30000) { cargarVista(true); recargarAmistades(); pedirReprogramar(1000); }
     else if (S.user && !S.espacio && !S.cargando && Date.now() - oculta > 5000) cargarTodo(); // sin calendario: por si te han invitado
   });
 }

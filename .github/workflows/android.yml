@@ -1,0 +1,89 @@
+# Construye la app de Android (APK) de Organizapp y la publica en «Releases».
+# No se ejecuta sola: GitHub → pestaña Actions → «Construir APK» → Run workflow.
+name: Construir APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # para crear la «Release» con la APK
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Instalar Capacitor
+        run: npm ci --no-audit --no-fund
+
+      - name: Preparar la web de la app (carpeta www)
+        run: python3 android-nativo/preparar.py web
+
+      - name: Crear el proyecto Android
+        run: npx cap add android
+
+      - name: Retocar el proyecto (enlace de login, permisos, iconos, versión)
+        run: python3 android-nativo/preparar.py android
+
+      - name: Copiar la web al proyecto Android
+        run: npx cap sync android
+
+      - name: Preparar el kit de Android (SDK 36)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+
+      - name: Compilar la APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --console=plain
+
+      - name: Alinear y firmar la APK
+        run: |
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          SIN_FIRMA=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          echo "APK sin firmar: $SIN_FIRMA"
+          "$BT/zipalign" -p -f 4 "$SIN_FIRMA" alineada.apk
+          "$BT/apksigner" sign \
+            --ks android-nativo/firma/organizapp-instalacion.jks \
+            --ks-key-alias organizapp --ks-pass pass:organizapp --key-pass pass:organizapp \
+            --out organizapp.apk alineada.apk
+          "$BT/apksigner" verify --print-certs organizapp.apk | head -n 3
+          ls -l organizapp.apk
+
+      - name: Guardar la APK también como archivo de la ejecución
+        uses: actions/upload-artifact@v4
+        with:
+          name: organizapp-apk
+          path: organizapp.apk
+          retention-days: 30
+
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(grep -oP "VERSION = '\K[0-9]+" sw.js)
+          if gh release view "v$V" > /dev/null 2>&1; then
+            gh release upload "v$V" organizapp.apk --clobber
+            gh release edit "v$V" --latest
+          else
+            gh release create "v$V" organizapp.apk --target "$GITHUB_SHA" --latest \
+              --title "Organizapp v$V" \
+              --notes "App de Android de Organizapp, versión $V. Descarga «organizapp.apk», ábrela en el móvil y pulsa Instalar."
+          fi
+          echo "### Listo: Organizapp v$V" >> "$GITHUB_STEP_SUMMARY"
+          echo "Descarga: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/organizapp.apk" >> "$GITHUB_STEP_SUMMARY"
