@@ -258,6 +258,22 @@ with sync_playwright() as p:
     page.locator('.modal').get_by_role('button', name='Importar').click()
     page.wait_for_timeout(600)
     comprobar(page.locator('.modal').count() == 0, 'importación cerrada')
+    # importador sencillo con «borrar lo que había»: solo se toca lo de ese día y de esa persona
+    d0 = next(csv.DictReader(open(CSV, encoding='utf-8')))['fecha']
+    wb2 = openpyxl.Workbook(); ws2 = wb2.active
+    ws2.append(['Fecha', 'Persona', 'Franja', 'Hora', 'Texto']); ws2.append([datetime.date.fromisoformat(d0), 'Jorge', 'Desayuno', None, 'Solo esto'])
+    xlsx2 = os.path.join(tmp, 'menu2.xlsx'); wb2.save(xlsx2)
+    menu_db = lambda: page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")['menu']
+    jorge_id = USUARIOS_ID['jorge']
+    antes_j = [m for m in menu_db() if m['owner_id'] == jorge_id and m['fecha'] == d0]
+    tab(page, 'Más'); page.get_by_role('button', name=re.compile('Importar menú')).first.click()
+    page.get_by_label('Archivo de Excel').set_input_files(xlsx2); page.wait_for_timeout(300)
+    page.get_by_label('Borrar lo que ya hubiera en esas fechas', exact=False).check()
+    page.locator('.modal').get_by_role('button', name='Importar').click(); page.wait_for_timeout(800)
+    despues_j = [m for m in menu_db() if m['owner_id'] == jorge_id and m['fecha'] == d0]
+    comprobar(len(antes_j) > 1 and [m['texto'] for m in despues_j] == ['Solo esto'], f'importador sencillo: ese día solo queda lo del archivo ({len(antes_j)} → {len(despues_j)})')
+    comprobar(len([m for m in menu_db() if m['owner_id'] != jorge_id and m['fecha'] == d0]) > 0, 'lo de Paula ese mismo día no se toca')
+    comprobar(len([m for m in menu_db() if m['owner_id'] == jorge_id and m['fecha'] != d0]) > 0, 'ni lo de Jorge otros días')
 
     print('11) Menú de la semana del 26/10')
     comprobar('26' in page.locator('.barra-nav').inner_text(), 'la vista salta a la semana del 26/10: ' + page.locator('.barra-nav').inner_text().replace('\n', ' '))
@@ -796,6 +812,29 @@ with sync_playwright() as p:
     db = page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")
     comprobar(len([e for e in db['eventos'] if e['titulo'].startswith('Preparar para mañana')]) == 2, 'al importar de nuevo las tareas se sustituyen, no se duplican')
     comprobar(len(db['lineas']) == 3, 'y sus pasos tampoco se duplican (los viejos se borran con la tarea)')
+    # «borrar lo que había»: se quita del Excel la avena del lunes y se vuelve a importar
+    wbq = openpyxl.Workbook(); wq = wbq.active; wq.title = 'Menú simple'
+    wq.append(['Semana', 'Día', 'Momento', 'Hora', 'Persona', 'Plato', 'Cantidad', 'Unidad', 'Trabajo previo día anterior'])
+    for fila_ in list(wm.iter_rows(min_row=2, values_only=True)):
+        if fila_[5] != 'Avena proteica': wq.append(list(fila_))
+    plan2_xlsx = os.path.join(tmp, 'plan2.xlsx'); wbq.save(plan2_xlsx)
+    leer_menu = lambda: page.evaluate("() => JSON.parse(localStorage.getItem('falso_db'))")['menu']
+    fuera27 = len([m for m in leer_menu() if not m['fecha'].startswith('2027')])
+    def importar_plan2(limpiar):
+        tab(page, 'Más'); page.get_by_role('button', name=re.compile('Importar menú')).first.click()
+        page.get_by_label('Archivo de Excel').set_input_files(plan2_xlsx)
+        page.get_by_label('Lunes en que empieza la primera semana').fill('2027-01-04')
+        casilla = page.get_by_label('Borrar lo que ya hubiera en esas fechas', exact=False)
+        comprobar(casilla.count() == 1 and not casilla.is_checked(), 'la casilla «Borrar lo que ya hubiera…» existe y empieza desmarcada')
+        if limpiar: casilla.check()
+        page.locator('.modal').get_by_role('button', name='Importar', exact=True).click(); page.wait_for_timeout(800)
+    importar_plan2(False)
+    comprobar(any(m['texto'].startswith('Avena') for m in leer_menu()), 'sin la casilla, la avena que quitaste del Excel se queda (importar no borra)')
+    importar_plan2(True)
+    mn2 = [m for m in leer_menu() if m['fecha'].startswith('2027-01')]
+    comprobar(not any(m['texto'].startswith('Avena') for m in mn2) and len(mn2) == 4, f'con la casilla, desaparece: quedan {len(mn2)} comidas')
+    comprobar('1 antigua borrada' in page.locator('body').inner_text(), 'y lo avisa')
+    comprobar(len([m for m in leer_menu() if not m['fecha'].startswith('2027')]) == fuera27, 'las comidas de otras fechas no se tocan')
     # sin tareas
     tab(page, 'Más'); page.get_by_role('button', name=re.compile('Importar menú')).first.click()
     page.get_by_label('Archivo de Excel').set_input_files(plan_xlsx)

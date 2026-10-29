@@ -154,6 +154,10 @@ export async function guardarMenu(filas) {
     ok(await sb.from('menu').upsert(filas.slice(i, i + 200), { onConflict: 'espacio_id,owner_id,fecha,franja' }));
   }
 }
+// Borra varias comidas por su id (se usa al importar con «borrar lo que había»)
+export async function borrarMenuIds(ids) {
+  for (let i = 0; i < ids.length; i += 100) ok(await sb.from('menu').delete().in('id', ids.slice(i, i + 100)));
+}
 export async function borrarMenu(espacioId, ownerId, fecha, franja) {
   ok(await sb.from('menu').delete().eq('espacio_id', espacioId).eq('owner_id', ownerId).eq('fecha', fecha).eq('franja', franja));
 }

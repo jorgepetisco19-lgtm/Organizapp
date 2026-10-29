@@ -2036,6 +2036,19 @@ function abrirRepetir() {
 }
 
 // ---------- importar menú desde Excel (o CSV) ----------
+// Tras importar con «borrar lo que había»: quita las comidas de esos días y de esas personas que NO vienen en el archivo
+// (las que sí vienen ya se han sustituido). Primero se guarda lo nuevo y después se borra, así un fallo no deja el menú vacío.
+async function borrarMenuSobrante(nuevas, dias, duenos) {
+  const orden = [...dias].sort();
+  if (!orden.length) return 0;
+  const claves = new Set(nuevas.map((x) => claveMenu(x.fecha, x.owner_id, x.franja)));
+  const existentes = await D.cargarMenu(S.espacio.id, orden[0], orden[orden.length - 1]);
+  const sobran = existentes.filter((f) => dias.has(f.fecha) && duenos.has(f.owner_id) && puedeEditarCapa(f.owner_id) && !claves.has(claveMenu(f.fecha, f.owner_id, f.franja)));
+  await D.borrarMenuIds(sobran.map((f) => f.id));
+  return sobran.length;
+}
+const TEXTO_LIMPIAR = 'Borrar lo que ya hubiera en esas fechas y no esté en el archivo (de las personas que importas)';
+
 function descargarPlantilla(tipo = 'sencilla') {
   const plan = tipo === 'plan';
   const bytes = crearXlsx(plan ? plantillaPlanSemanal() : plantillaMenu());
@@ -2081,6 +2094,7 @@ function zonaPlanSemanal(plan, cerrar) {
       editables().map((m) => el('option', { value: m.id, selected: m.id === mapeo[nombre] }, m.nombre)));
     return el('label', {}, `«${nombre}» en el archivo es…`, sel);
   });
+  const limpiarChk = el('input', { type: 'checkbox' });
   const resumen = el('p', { 'aria-live': 'polite' });
   const aviso1 = el('p', { class: 'error-txt', role: 'alert' });
   const botonImportar = el('button', { type: 'button', class: 'primario' }, 'Importar');
@@ -2117,7 +2131,14 @@ function zonaPlanSemanal(plan, cerrar) {
   botonImportar.onclick = () => conCarga(botonImportar, async () => {
     const c = calcular();
     if (c.error) throw new Error(c.error);
-    await D.guardarMenu(c.filas.map((x) => ({ espacio_id: S.espacio.id, owner_id: mapeo[x.persona], fecha: x.fecha, franja: x.franja, hora: x.hora, texto: x.texto })));
+    const nuevas = c.filas.map((x) => ({ espacio_id: S.espacio.id, owner_id: mapeo[x.persona], fecha: x.fecha, franja: x.franja, hora: x.hora, texto: x.texto }));
+    await D.guardarMenu(nuevas);
+    let nBorradas = 0;
+    if (limpiarChk.checked) {
+      const dias = new Set(c.semanas.flatMap((sem) => Array.from({ length: 7 }, (_, d) => sumarDias(c.lunes, (sem - plan.semanas[0]) * 7 + d))));
+      try { nBorradas = await borrarMenuSobrante(nuevas, dias, new Set([...c.personas].map((n) => mapeo[n]))); }
+      catch (e) { aviso('Se importó el menú, pero no se pudo borrar lo antiguo: ' + (e.message || e), true); }
+    }
     let nTareas = 0;
     if (tareasChk.checked) {
       // las tareas de una importación anterior en esas fechas se sustituyen (solo las que empiezan por «Preparar para mañana»)
@@ -2138,7 +2159,7 @@ function zonaPlanSemanal(plan, cerrar) {
       }
     }
     cerrar();
-    aviso(`${c.filas.length} comidas importadas${nTareas ? ` y ${nTareas} tareas de preparación` : ''}`);
+    aviso(`${c.filas.length} comidas importadas${nBorradas ? `, ${nBorradas} ${nBorradas === 1 ? 'antigua borrada' : 'antiguas borradas'}` : ''}${nTareas ? ` y ${nTareas} tareas de preparación` : ''}`);
     S.tab = 'menu'; S.semana = inicioSemana(c.lunes); S.rango = null; await cargarVista(true);
   });
   lunesIn.addEventListener('input', recalcular);
@@ -2151,6 +2172,7 @@ function zonaPlanSemanal(plan, cerrar) {
     el('label', {}, `La Semana ${plan.semanas[0]} empieza el lunes`, lunesIn),
     plan.semanas.length > 1 ? el('div', {}, semLabels) : null,
     ...selects,
+    el('label', { class: 'check-fila' }, limpiarChk, el('span', {}, TEXTO_LIMPIAR)),
     hayPrevio ? el('div', { class: 'bloque' },
       el('label', { class: 'check-fila' }, tareasChk, el('span', {}, 'Crear una tarea el día anterior por cada día con platos que necesitan trabajo previo')),
       el('label', {}, 'A las', horaIn)) : null,
@@ -2164,6 +2186,7 @@ function abrirImportar() {
   const cuerpo = el('div', { class: 'formulario' });
   const archivo = el('input', { type: 'file', accept: '.xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'aria-label': 'Archivo de Excel' });
   const zona = el('div', {});
+  const limpiarChk = el('input', { type: 'checkbox' });
   let leido = null;
 
   archivo.addEventListener('change', async () => {
@@ -2193,6 +2216,7 @@ function abrirImportar() {
       el('p', {}, `Hay ${leido.filas.length} comidas, del ${fechaCorta(fechas[0])} al ${fechaCorta(fechas[fechas.length - 1])}.`),
       leido.errores.length ? el('p', { class: 'suave' }, `${leido.errores.length} líneas se ignoran por errores (por ejemplo, línea ${leido.errores[0].linea}: ${leido.errores[0].motivo}).`) : null,
       ...selects,
+      el('label', { class: 'check-fila' }, limpiarChk, el('span', {}, TEXTO_LIMPIAR)),
       el('p', { class: 'suave' }, 'Lo que ya hubiera escrito en esas mismas franjas se sustituye.'),
       el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', class: 'primario', onclick: (e) => conCarga(e.currentTarget, async () => {
         const destinos = leido.personas.filter((n) => mapeo[n]).map((n) => mapeo[n]);
@@ -2202,7 +2226,12 @@ function abrirImportar() {
         }));
         if (!filas.length) throw new Error('No has asignado ninguna persona.');
         await D.guardarMenu(filas);
-        cerrar(); aviso(`${filas.length} comidas importadas`);
+        let nBorradas = 0;
+        if (limpiarChk.checked) {
+          try { nBorradas = await borrarMenuSobrante(filas, new Set(filas.map((x) => x.fecha)), new Set(destinos)); }
+          catch (e) { aviso('Se importó el menú, pero no se pudo borrar lo antiguo: ' + (e.message || e), true); }
+        }
+        cerrar(); aviso(`${filas.length} comidas importadas${nBorradas ? `, ${nBorradas} ${nBorradas === 1 ? 'antigua borrada' : 'antiguas borradas'}` : ''}`);
         S.tab = 'menu'; S.semana = inicioSemana(fechas[0]); await cargarVista(true);
       }) }, 'Importar')),
     ].filter(Boolean));
