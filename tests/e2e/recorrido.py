@@ -108,6 +108,7 @@ with sync_playwright() as p:
     print('4) Vista Inicio (Hoy / Mañana)')
     tab(page, 'Inicio')
     txt = page.locator('#contenido').inner_text()
+    comprobar('Hoy' in page.locator('.seg [aria-pressed="true"]').inner_text(), 'al entrar, Inicio apunta a «Hoy»')
     comprobar('Sacar pollo' in txt, 'la tarea de hoy aparece en Hoy')
     page.locator('.seg button', has_text='Mañana').click()
     page.wait_for_timeout(200)

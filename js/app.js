@@ -77,7 +77,7 @@ const S = {
   cargando: true, error: null, errorLogin: null,
   user: null, perfil: null, espacio: null, relacion: null,
   espacios: [], miembros: [], enviadas: [], invitaciones: [], amistades: null,
-  tab: 'inicio', inicioDia: 'manana',
+  tab: 'inicio', inicioDia: 'hoy',
   capas: new Set(), tipos: new Set(leerLocal('tipos', TIPOS.map((t) => t.id))),
   tiposInicio: new Set(leerLocal('tipos_inicio', TIPOS.map((t) => t.id))),
   vista: leerLocal('vista', 'lista'),
