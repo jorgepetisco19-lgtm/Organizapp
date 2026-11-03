@@ -2,7 +2,8 @@
 (native-bridge.js) y un Android SIMULADO por debajo. Comprueba login con Google por navegador externo, avisos, botón atrás,
 compartir archivos y aviso de versión nueva.
 
-Uso (desde la carpeta del proyecto):   python3 tests/e2e/nativo.py
+Uso (desde la carpeta del proyecto):   python3 tests/e2e/nativo.py            (la APK de siempre, sin Firebase)
+                                       CON_PUSH=1 python3 tests/e2e/nativo.py   (APK con avisos push: simula google-services.json)
 Necesita red para «npm ci» (baja Capacitor, como hace el workflow). NO prueba el Android real: eso solo se ve en un móvil.
 """
 import base64, datetime, zoneinfo, functools, http.server, json, os, re, shutil, subprocess, sys, tempfile, threading
@@ -15,6 +16,12 @@ TMP = tempfile.mkdtemp(prefix='organizapp-nativo-')
 # 1) Se construye www/ igual que el workflow: copia del proyecto + npm ci + preparar.py web
 COPIA = os.path.join(TMP, 'proy')
 shutil.copytree(RAIZ, COPIA, ignore=shutil.ignore_patterns('tests', 'sql', 'node_modules', 'android', 'www', '.git', 'importar'))
+CON_PUSH = os.environ.get('CON_PUSH') == '1'
+if CON_PUSH:  # un google-services.json de mentira, con el nombre de paquete de la app
+    with open(os.path.join(COPIA, 'android-nativo', 'google-services.json'), 'w', encoding='utf-8') as f:
+        json.dump({'project_info': {'project_number': '1', 'project_id': 'organizapp-test'}, 'configuration_version': '1', 'client': [{
+            'client_info': {'mobilesdk_app_id': '1:1:android:abc', 'android_client_info': {'package_name': 'io.github.jorgepetisco19lgtm.organizapp'}},
+            'api_key': [{'current_key': 'x'}]}]}, f)
 subprocess.run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=COPIA, check=True, capture_output=True)
 subprocess.run([sys.executable, 'android-nativo/preparar.py', 'web'], cwd=COPIA, check=True)
 WWW = os.path.join(COPIA, 'www')
@@ -35,9 +42,11 @@ CABECERAS = {
     'Filesystem': ['writeFile'],
     'Share': ['share', 'canShare'],
 }
+if CON_PUSH:
+    CABECERAS['PushNotifications'] = ['register', 'unregister', 'checkPermissions', 'requestPermissions', 'createChannel']
 NATIVO_JS = """
 window.WEBVIEW_SERVER_URL = location.origin;
-window.__nativo = { llamadas: [], oyentes: {}, perm: 'prompt', pendientes: [], programadas: [], exacto: 'granted', abierto: [], compartidos: [], archivos: {}, salio: false, launchUrl: null, canales: [] };
+window.__nativo = { llamadas: [], oyentes: {}, oyentesPush: {}, permPush: 'prompt', tokenFCM: 'token-fcm-' + 'x'.repeat(40), perm: 'prompt', pendientes: [], programadas: [], exacto: 'granted', abierto: [], compartidos: [], archivos: {}, salio: false, launchUrl: null, canales: [] };
 window.androidBridge = { postMessage(txt) {
   const d = JSON.parse(txt), N = window.__nativo;
   N.llamadas.push({ p: d.pluginId, m: d.methodName, o: d.options });
@@ -45,6 +54,12 @@ window.androidBridge = { postMessage(txt) {
   const o = d.options || {};
   switch (d.pluginId + '.' + d.methodName) {
     case 'App.addListener': N.oyentes[o.eventName] = d.callbackId; return;
+    case 'PushNotifications.addListener': N.oyentesPush[o.eventName] = d.callbackId; return;
+    case 'PushNotifications.checkPermissions': return responder({ receive: N.permPush });
+    case 'PushNotifications.requestPermissions': if (N.permPush === 'prompt') N.permPush = N.respuestaPush || 'granted'; return responder({ receive: N.permPush });
+    case 'PushNotifications.createChannel': N.canalesPush = (N.canalesPush || []).concat([o]); return responder({});
+    case 'PushNotifications.register': responder({}); setTimeout(() => window.__dispararPush('registration', { value: N.tokenFCM }), 30); return;
+    case 'PushNotifications.unregister': return responder({});
     case 'App.getLaunchUrl': return responder(N.launchUrl ? { url: N.launchUrl } : {});
     case 'App.exitApp': N.salio = true; return responder({});
     case 'Browser.open': N.abierto.push(o.url); return responder({});
@@ -66,6 +81,7 @@ window.Capacitor.PluginHeaders = %s.map(([name, ms]) => ({ name, methods: [{ nam
 window.__atajos = {};
 window.Capacitor.Plugins = window.Capacitor.Plugins || {};
 for (const [name] of %s) { window.Capacitor.Plugins[name] = window.__atajos[name] = { atajo: true, addListener: () => ({ remove() {} }) }; }
+window.__dispararPush = (evento, datos) => window.Capacitor.fromNative({ callbackId: window.__nativo.oyentesPush[evento], pluginId: 'PushNotifications', methodName: 'addListener', success: true, data: datos, save: true });
 window.__disparar = (evento, datos) => window.Capacitor.fromNative({ callbackId: window.__nativo.oyentes[evento], pluginId: 'App', methodName: 'addListener', success: true, data: datos, save: true });
 """ % (json.dumps(list(CABECERAS.items())), json.dumps(list(CABECERAS.items())))
 
@@ -85,6 +101,8 @@ def semilla(page, evs):
       localStorage.setItem('falso_db', JSON.stringify(db)); }""", evs)
 
 JORGE, PAULA, TERCERO = ('00000000-0000-0000-0000-00000000000' + c for c in 'abc')
+TOKEN_FCM = 'token-fcm-' + 'x' * 40
+def dispositivos(page): return page.evaluate("JSON.parse(localStorage.getItem('falso_db')).dispositivos || []")
 REDIR = 'io.github.jorgepetisco19lgtm.organizapp://auth'
 
 with sync_playwright() as p:
@@ -137,6 +155,19 @@ with sync_playwright() as p:
     comprobar(N(page, 'perm') == 'granted', 'permiso concedido')
     comprobar(N(page, 'programadas.length') == 0 and N(page, 'pendientes') == [], 'sin eventos con hora, no se programa nada')
 
+    if CON_PUSH:
+        print('3b) Avisos push: este móvil se apunta')
+        page.wait_for_timeout(300)
+        comprobar(len(llamadas(page, 'PushNotifications', 'register')) == 1, 'se apunta a Firebase una vez al entrar')
+        comprobar(N(page, 'permPush') == 'granted' and len(llamadas(page, 'PushNotifications', 'requestPermissions')) == 1, 'pide el permiso de notificaciones')
+        comprobar(N(page, 'canalesPush[0].id') == 'novedades' and N(page, 'canalesPush[0].importance') == 4, 'crea el canal «novedades» con importancia alta')
+        comprobar(dispositivos(page) == [{'user_id': JORGE, 'token': TOKEN_FCM}], 'el código del móvil queda guardado a nombre de Jorge: ' + str(dispositivos(page)))
+        comprobar(page.evaluate("Object.keys(window.__atajos).every((n) => window.Capacitor.Plugins[n] && window.Capacitor.Plugins[n] !== window.__atajos[n])"), 'todos los componentes (también el de push) son los reales')
+    else:
+        print('3b) Sin Firebase: la APK de siempre')
+        comprobar(page.evaluate("fetch('nativo/push.json').then((r) => r.json())") == {'activo': False} and not os.path.exists(os.path.join(WWW, 'nativo', 'push-notifications.js')), 'push.json dice «activo: false» y no lleva el componente de push')
+        comprobar(len(N(page, "llamadas.filter((l) => l.p === 'PushNotifications')")) == 0, 'no llama a nada de Firebase')
+
     print('4) Eventos: uno propio creado en la app + otros sembrados')
     semilla(page, [
         {'owner_id': PAULA, 'titulo': 'Cena de Paula', 'hora_inicio': '20:00:00'},
@@ -172,6 +203,48 @@ with sync_playwright() as p:
     tab(page, 'Más')
     comprobar(page.locator('#avisos').count() == 1, 'hay tarjeta «Avisos»')
     comprobar('3 avisos programados' in page.locator('.estado-avisos').inner_text(), 'dice cuántos hay: ' + page.locator('.estado-avisos').inner_text())
+    if not CON_PUSH:
+        comprobar(page.get_by_label('Avisarme cuando otra persona cree o cambie un evento mío').count() == 0, 'sin Firebase no se enseña el interruptor de cambios de otras personas')
+        comprobar('cuando abras la app' in page.locator('#avisos').inner_text(), 'y el texto explica que se enteran al abrir la app')
+    else:
+        print('5b) Avisos de cambios de otras personas (push)')
+        tog = page.get_by_label('Avisarme cuando otra persona cree o cambie un evento mío')
+        comprobar(tog.is_checked(), 'el interruptor está activado por defecto')
+        comprobar('Activados en este móvil' in page.locator('.estado-push').inner_text(), 'dice que está activado: ' + page.locator('.estado-push').inner_text())
+        page.get_by_role('button', name=re.compile('Probar avisos de cambios')).click(); page.wait_for_timeout(300)
+        comprobar('Aviso de prueba enviado' in page.locator('#aviso').inner_text(), '«Probar» manda el aviso de prueba: ' + page.locator('#aviso').inner_text())
+        page.evaluate("localStorage.setItem('falso_sin_clave', '1')")
+        page.get_by_role('button', name=re.compile('Probar avisos de cambios')).click(); page.wait_for_timeout(300)
+        comprobar('Falta un paso' in page.locator('#aviso').inner_text(), 'si falta la clave en Supabase, lo explica')
+        page.evaluate("localStorage.removeItem('falso_sin_clave')")
+        # llega un aviso con la app abierta: se enseña dentro
+        page.evaluate("window.__dispararPush('pushNotificationReceived', { title: 'Paula añadió un evento · Casa', body: 'Cena · vie 20/11 21:30' })"); page.wait_for_timeout(300)
+        comprobar(page.locator('#aviso').inner_text() == 'Paula añadió un evento · Casa — Cena · vie 20/11 21:30', 'con la app abierta, el aviso se enseña dentro: ' + page.locator('#aviso').inner_text())
+        page.evaluate("document.getElementById('aviso').className = 'aviso'; document.getElementById('aviso').textContent = ''")
+        page.evaluate("window.__dispararPush('pushNotificationActionPerformed', { notification: { title: 'x', body: 'y' } })"); page.wait_for_timeout(200)
+        comprobar(page.locator('#aviso').inner_text() == '', 'tocar un aviso de la bandeja abre la app sin repetir el mensaje')
+        tab(page, 'Más')
+        # falta el SQL 13 en Supabase: se ve el motivo, no se queda en «Activando…»
+        page.evaluate("localStorage.setItem('falso_sin_sql13', '1')")
+        page.evaluate("window.__dispararPush('registration', { value: 'otro-token-' + 'y'.repeat(40) })"); page.wait_for_timeout(300)
+        comprobar('No se pudieron activar' in page.locator('.estado-push').inner_text() and 'registrar_dispositivo' in page.locator('.estado-push').inner_text(), 'si falta el SQL 13, lo dice: ' + page.locator('.estado-push').inner_text()[:80])
+        page.evaluate("localStorage.removeItem('falso_sin_sql13')")
+        page.evaluate("window.__dispararPush('registration', { value: window.__nativo.tokenFCM })"); page.wait_for_timeout(300)
+        comprobar('Activados en este móvil' in page.locator('.estado-push').inner_text(), 'cuando Firebase da otro código, se vuelve a apuntar')
+        n_reg = len(llamadas(page, 'PushNotifications', 'register'))
+        n_unreg = len(llamadas(page, 'PushNotifications', 'unregister'))
+        tog.uncheck(); page.wait_for_timeout(400)
+        comprobar(dispositivos(page) == [] and len(llamadas(page, 'PushNotifications', 'unregister')) == n_unreg + 1, 'al desactivarlo, el móvil se quita de la lista y se desapunta de Firebase')
+        comprobar('Desactivados' in page.locator('.estado-push').inner_text(), 'y lo dice')
+        page.get_by_role('button', name=re.compile('Probar avisos de cambios')).click(); page.wait_for_timeout(300)
+        comprobar('Activa antes' in page.locator('#aviso').inner_text(), '«Probar» con los avisos desactivados pide activarlos antes')
+        page.evaluate("window.__nativo.permPush = 'denied'")
+        tog.check(); page.wait_for_timeout(500)
+        comprobar('bloqueadas' in page.locator('.estado-push').inner_text() and dispositivos(page) == [], 'con el permiso denegado lo explica y no se apunta: ' + page.locator('.estado-push').inner_text()[:60])
+        page.evaluate("window.__nativo.permPush = 'granted'")
+        tog.uncheck(); page.wait_for_timeout(300); tog.check(); page.wait_for_timeout(600)
+        comprobar(len(llamadas(page, 'PushNotifications', 'register')) == n_reg + 1 and dispositivos(page) == [{'user_id': JORGE, 'token': TOKEN_FCM}], 'al volver a activarlo, se apunta otra vez')
+        page.screenshot(path=f'{CAP}/n2-mas-avisos-push.png', full_page=True)
     page.get_by_label('Cuánto antes avisar').select_option('60'); page.wait_for_timeout(500)
     ult = N(page, 'programadas.slice(-1)[0]')
     dd = next(n for n in ult if 'Dentista' in n['title'])
@@ -184,7 +257,7 @@ with sync_playwright() as p:
     page.get_by_label('Avisarme antes de mis eventos').check(); page.wait_for_timeout(800)
     comprobar(len(N(page, 'pendientes')) == 3, 'al volver a activar, vuelven los avisos')
     n_ant = len(N(page, 'programadas'))
-    page.get_by_role('button', name=re.compile('Probar aviso')).click(); page.wait_for_timeout(500)
+    page.get_by_role('button', name='🔔 Probar aviso', exact=True).click(); page.wait_for_timeout(500)
     prueba = next((n for lote in N(page, 'programadas') for n in lote if n['id'] == 2147483000), None)
     comprobar(prueba is not None and prueba['isExactNotification'] is False, 'el aviso de prueba se programa')
     page.screenshot(path=f'{CAP}/n1-mas-avisos.png', full_page=True)
@@ -240,8 +313,12 @@ with sync_playwright() as p:
     comprobar(N(page, 'abierto')[-1] == 'https://jorgepetisco19-lgtm.github.io/Organizapp/privacidad.html' and page.url == URL, 'se abren en el navegador y la app no se mueve')
 
     print('11) Cerrar sesión y volver a entrar')
-    page.get_by_role('button', name='Cerrar sesión').click(); page.wait_for_timeout(400)
+    n_unreg = len(llamadas(page, 'PushNotifications', 'unregister'))
+    page.get_by_role('button', name='Cerrar sesión').click(); page.wait_for_timeout(500)
     expect(page.get_by_role('button', name='Entrar con Google')).to_be_visible()
+    if CON_PUSH:
+        comprobar(dispositivos(page) == [], 'al cerrar sesión, este móvil deja de recibir los avisos de Jorge')
+        comprobar(len(llamadas(page, 'PushNotifications', 'unregister')) == n_unreg + 1, '…y se desapunta de Firebase')
     comprobar(True, 'vuelve a la pantalla de entrada')
 
     print('12) Arranque en frío desde el enlace de vuelta (la app se había cerrado)')

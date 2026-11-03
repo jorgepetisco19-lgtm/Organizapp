@@ -46,9 +46,17 @@ export function planificarAvisos(eventos, { userId, ahora = new Date(), minutos 
         cuando,
         titulo: `${tipo && tipo.icono ? tipo.icono + ' ' : ''}${ev.titulo}`,
         cuerpo: `En ${textoAntes(minutos)} · ${hi}${hf ? '–' + hf : ''}`,
+        clave: `${x.fecha}|${hi}|${String(ev.titulo).trim().toLowerCase()}`,
       });
     }
   }
   out.sort((a, b) => a.cuando - b.cuando || a.id - b.id);
-  return out.slice(0, max);
+  // El mismo evento copiado en varios calendarios (mismo título y misma hora) avisa una sola vez.
+  const vistos = new Set();
+  const unicos = out.filter((a) => {
+    if (vistos.has(a.clave)) return false;
+    vistos.add(a.clave);
+    return true;
+  });
+  return unicos.slice(0, max);
 }

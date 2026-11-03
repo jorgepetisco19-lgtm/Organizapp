@@ -105,7 +105,7 @@ const S = {
   eventos: [], menu: [], menuMap: new Map(), rango: null, cargandoDatos: false,
   compra: null, compraEsp: null, // lista de la compra del calendario abierto (null = sin cargar)
   subtipos: [], // subtipos de cita del calendario abierto
-  version: '…', instalar: null, versionNueva: null, avisos: null,
+  version: '…', instalar: null, versionNueva: null, avisos: null, push: null,
 };
 const claveMenu = (fecha, owner, franja) => `${fecha}|${owner}|${franja}`;
 const miembro = (id) => S.miembros.find((m) => m.id === id);
@@ -297,6 +297,7 @@ async function cargarTodo(preferido = null) {
     await prepararEspacio(S.espacios.find((e) => e.id === quiero) || S.espacios[0] || null);
     S.cargando = false;
     pedirReprogramar(500);
+    sincronizarPush();
     if (S.espacio) return await cargarVista(true);
   } catch (e) {
     S.error = e.message || String(e);
@@ -353,7 +354,7 @@ function pantallaError() {
     el('p', { class: 'error-txt', role: 'alert' }, S.error),
     el('div', { class: 'fila-botones' },
       el('button', { class: 'primario', onclick: () => cargarTodo() }, 'Reintentar'),
-      el('button', { onclick: () => D.cerrarSesion() }, 'Cerrar sesión')));
+      el('button', { onclick: () => salir() }, 'Cerrar sesión')));
 }
 
 function pantallaBienvenida() {
@@ -376,7 +377,7 @@ function pantallaBienvenida() {
     botonInstalar(true),
     el('div', { class: 'fila-botones' },
       el('button', { onclick: (e) => conCarga(e.currentTarget, async () => { await cargarTodo(); }) }, '🔄 Comprobar invitaciones')),
-    el('p', {}, el('button', { class: 'enlace', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
+    el('p', {}, el('button', { class: 'enlace', onclick: () => salir() }, 'Cerrar sesión')),
     el('p', {}, el('button', { class: 'enlace', onclick: () => abrirBorrarCuenta() }, 'Borrar mi cuenta y mis datos')),
     enlacesLegales());
 }
@@ -1310,7 +1311,7 @@ function vistaMas() {
         } }, '🔄 Buscar actualización')),
       el('p', { class: 'suave' }, 'Versión ', el('span', { class: 'version-txt' }, S.version)),
       S.versionNueva ? el('p', { class: 'nueva-version' }, `Hay una versión nueva (${S.versionNueva}). `, el('button', { class: 'enlace', onclick: () => N.abrirEnNavegador(URL_DESCARGA) }, 'Descargar')) : null,
-      el('button', { class: 'peligro', onclick: () => D.cerrarSesion() }, 'Cerrar sesión')),
+      el('button', { class: 'peligro', onclick: () => salir() }, 'Cerrar sesión')),
     el('section', { class: 'tarjeta', id: 'mi-cuenta' },
       el('h2', {}, 'Tu cuenta y tus datos'),
       el('p', { class: 'suave' }, 'Solo guardamos tu nombre, tu correo y lo que escribes aquí. Puedes borrarlo todo cuando quieras.'),
@@ -1661,11 +1662,13 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
       if (JSON.stringify(despues) !== JSON.stringify(antes)) campos.hechas = despues;
     }
     const idNuevo = nuevo && pasosEd.length ? crypto.randomUUID() : null;
+    // Las copias en otros calendarios quedan vinculadas (mismo «grupo_copia»): cambiar una cambia las demás. Solo se escribe si hay copias.
+    const grupo = destinos.length ? crypto.randomUUID() : null;
     return conCarga(btn, async () => {
       if (nuevo) {
         await D.crearEventos([
-          { ...(idNuevo ? { id: idNuevo } : {}), ...campos, espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id },
-          ...destinos.map((e) => filaCopia({ ...campos, excepciones: [] }, e.id)),
+          { ...(idNuevo ? { id: idNuevo } : {}), ...campos, ...(grupo ? { grupo_copia: grupo } : {}), espacio_id: S.espacio.id, owner_id: owner, creado_por: S.user.id },
+          ...destinos.map((e) => filaCopia({ ...campos, excepciones: [] }, e.id, grupo)),
         ]);
         if (idNuevo) {
           const base = Date.now();
@@ -1703,6 +1706,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     diasWrap,
     hastaWrap,
     ev?.repeticion && editable ? el('p', { class: 'suave' }, 'Los cambios se aplican a toda la serie. Para quitar solo un día, usa «Borrar».') : null,
+    ev?.grupo_copia && editable ? el('p', { class: 'suave' }, '🔗 Este evento también está en otro de tus calendarios: lo que cambies aquí (hora, título, fecha…) se cambia también allí. «Borrar» solo lo quita de este.') : null,
     notasIn,
     hechaUI,
     pasosUI,
@@ -1716,9 +1720,10 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
 }
 
 // Una copia de un evento para otro calendario: siempre como evento TUYO (no "de todos").
-function filaCopia(src, espacioId) {
+function filaCopia(src, espacioId, grupo = null) {
   return {
     espacio_id: espacioId, owner_id: S.user.id, creado_por: S.user.id, compartido: false,
+    ...(grupo ? { grupo_copia: grupo } : {}),
     tipo: src.tipo, titulo: src.titulo, fecha: src.fecha, hora_inicio: src.hora_inicio || null, hora_fin: src.hora_fin || null,
     notas: src.notas || null, repeticion: src.repeticion || null, repite_hasta: src.repite_hasta || null, excepciones: src.excepciones || [],
     ...(src.dias_semana && src.dias_semana.length ? { dias_semana: src.dias_semana } : {}),
@@ -1726,7 +1731,7 @@ function filaCopia(src, espacioId) {
   };
 }
 
-// Importa TUS eventos de otro de tus calendarios al que tienes abierto (copias independientes).
+// Importa TUS eventos de otro de tus calendarios al que tienes abierto (copias vinculadas: los cambios se aplican en los dos).
 function abrirImportarEventos() {
   const otros = S.espacios.filter((e) => e.id !== S.espacio.id);
   if (!otros.length) return aviso('Necesitas otro calendario para importar.', true);
@@ -1775,8 +1780,16 @@ function abrirImportarEventos() {
   }
 
   botonImportar.onclick = () => conCarga(botonImportar, async () => {
-    const sel = filas.filter((f) => f.chk.checked).map((f) => filaCopia(f.ev, S.espacio.id));
-    if (!sel.length) return;
+    const marcadas = filas.filter((f) => f.chk.checked);
+    if (!marcadas.length) return;
+    // Vinculadas: si el original ya tiene grupo se usa ese; si es tuyo y no lo tiene, se le crea (así los cambios viajan en los dos sentidos).
+    const grupos = new Map();
+    for (const f of marcadas) {
+      if (f.ev.grupo_copia) grupos.set(f.ev.id, f.ev.grupo_copia);
+      else if (f.ev.owner_id === S.user.id && !f.ev.compartido && !esVarios(f.ev)) grupos.set(f.ev.id, crypto.randomUUID());
+    }
+    const sel = marcadas.map((f) => filaCopia(f.ev, S.espacio.id, grupos.get(f.ev.id) || null));
+    await D.vincularOriginales(marcadas.filter((f) => !f.ev.grupo_copia && grupos.has(f.ev.id)).map((f) => ({ id: f.ev.id, grupo: grupos.get(f.ev.id) })));
     await D.crearEventos(sel);
     cerrar(); S.rango = null;
     aviso(`${sel.length} ${sel.length === 1 ? 'evento importado' : 'eventos importados'}`);
@@ -1785,7 +1798,7 @@ function abrirImportarEventos() {
   const cerrar = modal('Importar mis eventos', el('div', { class: 'formulario' },
     el('label', {}, 'Traer desde', origenSel),
     lista,
-    el('p', { class: 'suave' }, `Se copian como eventos tuyos a «${S.espacio.nombre}». ${otrasPersonas.length ? `Los verán: ${otrasPersonas.join(', ')}.` : 'Ahora solo los ves tú.'} Son copias: si cambias uno, el otro no se modifica.`),
+    el('p', { class: 'suave' }, `Se copian como eventos tuyos a «${S.espacio.nombre}». ${otrasPersonas.length ? `Los verán: ${otrasPersonas.join(', ')}.` : 'Ahora solo los ves tú.'} Quedan vinculadas: si cambias la hora, el título… de una, se cambia también en la otra (borrar sí es por separado).`),
     el('div', { class: 'fila-botones fin' }, el('button', { type: 'button', onclick: () => cerrar() }, 'Cancelar'), botonImportar)));
   cargarLista();
 }
@@ -2332,6 +2345,54 @@ async function reprogramarAvisos() {
   }
 }
 
+// ---------- avisos de cambios de otras personas (notificaciones push) ----------
+// Solo existen en la APK construida con Firebase (N.pushDisponible()). Sin eso, esta parte no hace nada.
+let pushPara = null; // persona para la que este móvil ya se ha apuntado en esta apertura de la app
+const textoEstadoPush = () => {
+  if (!leerLocal('push_on', true)) return 'Desactivados.';
+  const p = S.push;
+  if (!p) return 'Preparando…';
+  if (p.error) return 'No se pudieron activar: ' + p.error;
+  if (p.permiso === 'denegado') return 'Las notificaciones están bloqueadas para Organizapp en el móvil.';
+  return p.registrado ? 'Activados en este móvil.' : 'Activando…';
+};
+const pintarEstadoPush = () => document.querySelectorAll('.estado-push').forEach((n) => { n.textContent = textoEstadoPush(); });
+
+async function sincronizarPush(forzar = false) {
+  if (!N.esNativa() || !N.pushDisponible() || !S.user) return;
+  if (!leerLocal('push_on', true)) return;
+  if (pushPara === S.user.id && !forzar) return;
+  pushPara = S.user.id;
+  S.push = { registrado: false };
+  try {
+    const activo = await N.activarPush({
+      alToken: async (token) => {
+        try { await D.registrarDispositivo(token); S.push = { registrado: true }; }
+        catch (e) { S.push = { registrado: false, error: e.message || String(e) }; }
+        pintarEstadoPush();
+      },
+      alRecibir: alRecibirPush,
+    });
+    if (!activo) S.push = { permiso: 'denegado' };
+  } catch (e) { S.push = { error: e.message || String(e) }; pushPara = null; }
+  pintarEstadoPush();
+}
+// Quita este móvil de los avisos de la persona que sale (si no, le seguirían llegando a un móvil que ya no es suyo).
+async function dejarPush() {
+  pushPara = null; S.push = null;
+  if (!N.esNativa() || !N.pushDisponible()) return;
+  const token = N.tokenDePush();
+  try { if (token) await D.quitarDispositivo(token); } catch { /* sin conexión: el siguiente que entre en este móvil lo recoge */ }
+  await N.desactivarPush();
+}
+const salir = async () => { try { await dejarPush(); } catch { /* cerrar sesión no depende de esto */ } return D.cerrarSesion(); };
+
+// Con la app abierta, Android no enseña el aviso: se enseña dentro y se refresca lo que se ve.
+function alRecibirPush(n, tocado = false) {
+  if (!tocado && n && (n.title || n.body)) aviso([n.title, n.body].filter(Boolean).join(' — '));
+  if (S.espacio) { cargarVista(true); pedirReprogramar(1000); }
+}
+
 function tarjetaAvisos() {
   const onIn = el('input', { type: 'checkbox', checked: leerLocal('avisos_on', true), 'aria-label': 'Avisarme antes de mis eventos', onchange: () => conCarga(onIn, async () => {
     guardarLocal('avisos_on', onIn.checked);
@@ -2349,7 +2410,7 @@ function tarjetaAvisos() {
     el('label', { class: 'check-fila' }, onIn, el('span', {}, 'Avisarme antes de mis eventos')),
     el('label', {}, 'Cuánto antes', minSel),
     el('p', { class: 'suave estado-avisos' }, textoEstadoAvisos()),
-    el('p', { class: 'suave' }, 'Avisa de los eventos con hora en los que participas: los tuyos, los de todos y los de tus grupos. Si otra persona añade o cambia algo, tu móvil lo sabrá cuando abras la app.'),
+    el('p', { class: 'suave' }, 'Avisa de los eventos con hora en los que participas: los tuyos, los de todos y los de tus grupos.' + (N.pushDisponible() ? '' : ' Si otra persona añade o cambia algo, tu móvil lo sabrá cuando abras la app.')),
     el('div', { class: 'fila-botones' },
       el('button', { onclick: (e) => conCarga(e.currentTarget, async () => {
         const permiso = await N.permisoAvisos(true);
@@ -2358,7 +2419,34 @@ function tarjetaAvisos() {
         aviso('Aviso de prueba en 5 segundos. Si no llega, mira el ahorro de batería.');
         pedirReprogramar(6000);
       }) }, '🔔 Probar aviso')),
+    N.pushDisponible() ? tarjetaAvisosCambios() : null,
     el('p', { class: 'suave' }, 'Si algún aviso no llega, en los ajustes del móvil quita el ahorro de batería a Organizapp.'));
+}
+
+// «Cuando otra persona cree o cambie un evento mío»: aviso al momento, aunque la app esté cerrada.
+function tarjetaAvisosCambios() {
+  const pushIn = el('input', { type: 'checkbox', checked: leerLocal('push_on', true), 'aria-label': 'Avisarme cuando otra persona cree o cambie un evento mío', onchange: () => conCarga(pushIn, async () => {
+    guardarLocal('push_on', pushIn.checked);
+    if (pushIn.checked) await sincronizarPush(true); else await dejarPush();
+    pintarEstadoPush();
+  }) });
+  return el('div', { class: 'avisos-cambios' },
+    el('h3', {}, 'Cambios de otras personas'),
+    el('label', { class: 'check-fila' }, pushIn, el('span', {}, 'Avisarme cuando otra persona cree o cambie un evento mío')),
+    el('p', { class: 'suave estado-push' }, textoEstadoPush()),
+    el('p', { class: 'suave' }, 'Te llega al momento, aunque la app esté cerrada: si lo que se crea o cambia es tuyo, es «de todos» o es de un grupo en el que estás. Lo que haces tú no te avisa.'),
+    el('div', { class: 'fila-botones' },
+      el('button', { onclick: (e) => conCarga(e.currentTarget, async () => {
+        if (!leerLocal('push_on', true)) throw new Error('Activa antes los avisos de cambios.');
+        await sincronizarPush();
+        const r = await D.probarAviso();
+        const dicen = {
+          enviado: 'Aviso de prueba enviado: debería llegar en unos segundos.',
+          sin_movil: 'Este móvil aún no está apuntado. Espera unos segundos y vuelve a probar.',
+          sin_clave: 'Falta un paso de la configuración en Supabase (la clave «avisos_secret»).',
+        };
+        aviso(dicen[r] || 'No se pudo enviar el aviso de prueba.', r !== 'enviado');
+      }) }, '🔔 Probar avisos de cambios')));
 }
 
 // ¿Hay una APK más nueva que la instalada? Se compara con la versión publicada en la web.

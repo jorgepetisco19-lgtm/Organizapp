@@ -11,6 +11,7 @@ import json
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
@@ -31,6 +32,13 @@ COMPONENTES = {
     '@capacitor/share/dist/plugin.js': 'share.js',
     '@capacitor/synapse/dist/synapse.js': 'synapse.js',  # lo necesita el componente de archivos
 }
+
+
+# Avisos de cambios de otras personas (push): solo se incluyen si existe este archivo, que baja Jorge de Firebase (ver LEEME.md).
+# No es secreto (lo lleva cualquier app dentro de su APK). Sin él se construye la APK de siempre, sin push.
+GOOGLE_SERVICES = pathlib.Path(__file__).resolve().parent / 'google-services.json'
+PUSH_PLUGIN = '@capacitor/push-notifications'
+PUSH_VERSION = '8.1.3'
 
 
 def fallo(msg):
@@ -59,7 +67,38 @@ def web():
         if not p.exists():
             fallo(f'Falta {origen} (¿se ejecutó «npm ci»?)')
         shutil.copy2(p, WWW / 'nativo' / destino)
-    print(f'www/ listo (versión {version()}): {sum(1 for _ in WWW.rglob("*") if _.is_file())} archivos')
+    push = preparar_push()
+    print(f'www/ listo (versión {version()}): {sum(1 for _ in WWW.rglob("*") if _.is_file())} archivos' + (' · con avisos push' if push else ' · sin avisos push (no hay google-services.json)'))
+
+
+def leer_google_services():
+    try:
+        d = json.loads(GOOGLE_SERVICES.read_text(encoding='utf-8'))
+        return d, [c['client_info']['android_client_info']['package_name'] for c in d['client']]
+    except Exception as e:  # noqa: BLE001
+        fallo(f'android-nativo/google-services.json no es un archivo de Firebase válido ({e}). Descárgalo otra vez de Firebase → Configuración del proyecto → Tus apps.')
+
+
+def preparar_push():
+    """Si hay google-services.json: instala el componente de notificaciones push y lo copia a www/nativo con su marca (push.json).
+    Sin él, push.json dice «activo: false» y la app no intenta usar Firebase."""
+    if not GOOGLE_SERVICES.exists():
+        (WWW / 'nativo' / 'push.json').write_text(json.dumps({'activo': False}), encoding='utf-8')
+        return False
+    _, paquetes = leer_google_services()
+    app_id = json.loads((RAIZ / 'capacitor.config.json').read_text(encoding='utf-8'))['appId']
+    if app_id not in paquetes:
+        fallo(f'google-services.json es de otra app ({", ".join(paquetes) or "sin paquete"}); debe ser «{app_id}». En Firebase, añade una app Android con ese nombre de paquete y descarga su archivo.')
+    # Se añade a package.json solo en esta construcción (no se guarda en el repositorio): así la APK sin Firebase no cambia nada.
+    r = subprocess.run(['npm', 'install', f'{PUSH_PLUGIN}@{PUSH_VERSION}', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=RAIZ, capture_output=True, text=True)
+    if r.returncode != 0:
+        fallo(f'No se pudo instalar {PUSH_PLUGIN}: {r.stderr[-500:]}')
+    origen = RAIZ / 'node_modules' / PUSH_PLUGIN / 'dist' / 'plugin.js'
+    if not origen.exists():
+        fallo(f'Falta {origen}')
+    shutil.copy2(origen, WWW / 'nativo' / 'push-notifications.js')
+    (WWW / 'nativo' / 'push.json').write_text(json.dumps({'activo': True}), encoding='utf-8')
+    return True
 
 
 def cambiar(texto, antiguo, nuevo, donde):
@@ -108,6 +147,21 @@ def android():
     st = (PRINCIPAL / 'res' / 'values' / 'strings.xml').read_text(encoding='utf-8')
     if f'<string name="custom_url_scheme">{app_id}</string>' not in st:
         fallo('strings.xml no define custom_url_scheme con el id de la app')
+
+    # 2b) Avisos push: el archivo de Firebase va dentro de la app y el canal/icono por defecto de sus notificaciones
+    if GOOGLE_SERVICES.exists():
+        if json.loads((WWW / 'nativo' / 'push.json').read_text(encoding='utf-8') if (WWW / 'nativo' / 'push.json').exists() else '{}').get('activo') is not True:
+            fallo('Hay google-services.json pero falta www/nativo/push.json: ejecuta antes «preparar.py web».')
+        shutil.copy2(GOOGLE_SERVICES, ANDROID / 'app' / 'google-services.json')
+        t = mf.read_text(encoding='utf-8')
+        if 'default_notification_channel_id' not in t:
+            t = cambiar(t, '</application>', '''
+        <!-- Si Firebase entrega un aviso sin canal, usa el de «novedades» y el icono de Organizapp -->
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="novedades" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/ic_stat_organizapp" />
+    </application>''', 'AndroidManifest.xml (</application>)')
+            mf.write_text(t, encoding='utf-8')
+        print('Avisos push: google-services.json copiado a android/app/')
 
     # 3) Número de versión de la APK = VERSION de sw.js (así cada APK nueva puede actualizar a la anterior)
     gr = ANDROID / 'app' / 'build.gradle'

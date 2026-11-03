@@ -28,11 +28,18 @@ export async function iniciarNativo() {
     await cargarScript(`nativo/${f}`);
     if (f === 'synapse.js') window.synapse = window.outsystemsSynapse;
   }
+  // Avisos de cambios de otras personas (push): solo si esta APK se construyó con Firebase (android-nativo/google-services.json).
+  // Sin eso, ni se carga ni se usa (llamar a Firebase sin configurar haría fallar la app).
+  let conPush = false;
+  try {
+    const r = await fetch('nativo/push.json', { cache: 'no-store' });
+    if (r.ok && (await r.json()).activo === true) { await cargarScript('nativo/push-notifications.js'); conPush = true; }
+  } catch { conPush = false; }
   const pl = (window.Capacitor && window.Capacitor.Plugins) || {};
   for (const n of ['App', 'Browser', 'LocalNotifications', 'Filesystem', 'Share']) {
     if (!pl[n]) throw new Error(`Falta el componente nativo ${n}`);
   }
-  P = { App: pl.App, Browser: pl.Browser, LocalNotifications: pl.LocalNotifications, Filesystem: pl.Filesystem, Share: pl.Share };
+  P = { App: pl.App, Browser: pl.Browser, LocalNotifications: pl.LocalNotifications, Filesystem: pl.Filesystem, Share: pl.Share, Push: conPush ? pl.PushNotifications || null : null };
   return P;
 }
 const plugins = () => { if (!P) throw new Error('La app nativa no está lista.'); return P; };
@@ -112,6 +119,39 @@ export async function avisoDePrueba(segundos = 5) {
     id: 2147483000, title: '🔔 Organizapp', body: 'Así te avisaré antes de tus eventos.', channelId: CANAL, smallIcon: ICONO, iconColor: '#2563EB', autoCancel: true,
     schedule: { at: new Date(Date.now() + segundos * 1000), allowWhileIdle: true }, isExactNotification: false,
   }] });
+}
+
+// ---------- avisos de cambios de otras personas (notificaciones push de Firebase) ----------
+const CANAL_PUSH = 'novedades';
+let tokenPush = null, alTokenCb = null, alRecibirCb = null, escuchasPush = false;
+export const pushDisponible = () => !!(P && P.Push);
+export const tokenDePush = () => tokenPush;
+
+// Pide permiso (si hace falta), crea el canal y se apunta a Firebase. alToken(token) se llama cada vez que Firebase da (o cambia) el código del móvil;
+// alRecibir(aviso, tocado) cuando llega un aviso con la app abierta (tocado=false) o cuando se toca uno de la bandeja (tocado=true). Devuelve true si quedó activo, false si el permiso está denegado.
+export async function activarPush({ alToken, alRecibir }) {
+  const { Push } = plugins();
+  if (!Push) return false;
+  alTokenCb = alToken; alRecibirCb = alRecibir;
+  let est = (await Push.checkPermissions()).receive;
+  if (est === 'prompt' || est === 'prompt-with-rationale') est = (await Push.requestPermissions()).receive;
+  if (est !== 'granted') return false;
+  if (!escuchasPush) {
+    escuchasPush = true;
+    Push.addListener('registration', (t) => { tokenPush = t && t.value; if (tokenPush && alTokenCb) alTokenCb(tokenPush); });
+    Push.addListener('registrationError', () => { /* sin conexión con Firebase: se reintenta en la próxima apertura */ });
+    Push.addListener('pushNotificationReceived', (n) => { if (alRecibirCb) alRecibirCb(n); });
+    Push.addListener('pushNotificationActionPerformed', (a) => { if (alRecibirCb) alRecibirCb((a && a.notification) || {}, true); });
+  }
+  await Push.createChannel({ id: CANAL_PUSH, name: 'Cambios en tus eventos', description: 'Cuando otra persona crea o cambia un evento en el que estás', importance: 4, visibility: 1, vibration: true });
+  await Push.register();
+  return true;
+}
+export async function desactivarPush() {
+  const { Push } = plugins();
+  tokenPush = null;
+  if (!Push) return;
+  try { await Push.unregister(); } catch { /* ya estaba desapuntado */ }
 }
 
 // ---------- versión nueva ----------

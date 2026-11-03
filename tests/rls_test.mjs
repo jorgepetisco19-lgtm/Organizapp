@@ -18,6 +18,14 @@ create role authenticated nologin;
 grant usage on schema auth, public to anon, authenticated;
 grant execute on function auth.uid(), auth.jwt() to anon, authenticated;
 create role authenticator nologin;
+-- Lo mínimo de pg_net y Vault de Supabase para poder probar los avisos del móvil (la llamada real a la función no se puede hacer aquí)
+create schema net;
+create table net.llamadas (id serial primary key, url text, headers jsonb, body jsonb);
+create function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds int default 5000)
+  returns bigint language sql as $$ insert into net.llamadas(url, headers, body) values (url, headers, body) returning id::bigint $$;
+create schema vault;
+create table vault.secretos (name text primary key, decrypted_secret text);
+create view vault.decrypted_secrets as select name, decrypted_secret from vault.secretos;
 -- como en Supabase: por defecto las tablas nuevas de public se abren a anon/authenticated
 alter default privileges in schema public grant all on tables to anon, authenticated;
 alter default privileges in schema public grant execute on functions to anon, authenticated;
@@ -1131,6 +1139,339 @@ r = await q(`update public.eventos set dias_extra = 0 where espacio_id=$1 return
 ok('…ni puede cambiarlos', !r.error && r.rows.length === 0, r.error);
 await db.exec('reset role');
 
+console.log('\n10h. Copias vinculadas (grupo_copia)');
+await db.exec('reset role');
+const [H1, H2, H3] = ['00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b3'];
+for (const [id, n] of [[H1, 'H1'], [H2, 'H2'], [H3, 'H3']]) await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,$2,$3)`, [id, n, U.jorge.id]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values
+  ($1,$4,'pareja','#101010'),($1,$5,'pareja','#202020'),($1,$6,'amigo','#303030'),
+  ($2,$4,'pareja','#101010'),($2,$6,'pareja','#303030'),
+  ($3,$4,'pareja','#101010'),($3,$5,'pareja','#202020')`, [H1, H2, H3, U.jorge.id, U.paula.id, U.amigo.id]);
+const G = '00000000-0000-0000-0000-0000000000c1';
+const evG = async (esp, extra = '') => (await db.query(`select * from public.eventos where espacio_id=$1 and grupo_copia=$2`, [esp, G])).rows[0];
+await como(U.jorge);
+const mkCopia = (esp, hi = '18:00', grupo = G) => q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,hora_fin,notas,creado_por,grupo_copia) values ($1,$2,'plan','Cena',$3,$4,'20:00','nota',$2,$5) returning id`, [esp, U.jorge.id, '2026-11-10', hi, grupo]);
+r = await mkCopia(H1); ok('Jorge crea el evento en H1 con grupo de copias', !r.error, r.error);
+const cH1 = r.rows[0]?.id;
+r = await mkCopia(H2); ok('…y su copia en H2', !r.error, r.error);
+const cH2 = r.rows[0]?.id;
+r = await mkCopia(H3); ok('…y su copia en H3', !r.error, r.error);
+const cH3 = r.rows[0]?.id;
+
+r = await q(`update public.eventos set titulo='Cena fuera', hora_inicio='21:00', hora_fin='23:00' where id=$1 returning id`, [cH1]);
+ok('Jorge cambia título y hora en H1', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+for (const [n, e] of [['H2', H2], ['H3', H3]]) {
+  const x = await evG(e);
+  ok(`El cambio llega a la copia de ${n} (título y horas)`, x.titulo === 'Cena fuera' && x.hora_inicio === '21:00:00' && x.hora_fin === '23:00:00', JSON.stringify(x));
+}
+await como(U.jorge);
+r = await q(`update public.eventos set notas='con vistas', fecha='2026-11-12' where id=$1 returning id`, [cH2]);
+ok('También al revés: cambiar la copia de H2 cambia las demás', !r.error, r.error);
+await db.exec('reset role');
+for (const [n, e] of [['H1', H1], ['H3', H3]]) {
+  const x = await evG(e);
+  ok(`…llega a ${n} (notas y fecha)`, x.notas === 'con vistas' && String(x.fecha).includes('2026-11-12') || x.fecha instanceof Date, JSON.stringify(x));
+}
+{
+  const f = (await db.query(`select to_char(fecha,'YYYY-MM-DD') f from public.eventos where grupo_copia=$1`, [G])).rows.map((x) => x.f);
+  ok('Las tres copias tienen la misma fecha', f.length === 3 && f.every((x) => x === '2026-11-12'), JSON.stringify(f));
+}
+await como(U.jorge);
+r = await q(`update public.eventos set excepciones = array['2026-11-12'::date] where id=$1 returning id`, [cH1]);
+await db.exec('reset role');
+ok('Quitar un día de una copia no lo quita de las otras', (await evG(H2)).excepciones.length === 0 && (await evG(H3)).excepciones.length === 0);
+await como(U.jorge);
+await q(`update public.eventos set hechas = array['2026-11-12'::date] where id=$1`, [cH3]);
+await db.exec('reset role');
+ok('Marcar hecha una copia la marca en las demás', (await evG(H1)).hechas.length === 1 && (await evG(H2)).hechas.length === 1);
+await como(U.jorge);
+await q(`update public.eventos set hechas = '{}' where id=$1`, [cH3]);
+
+// el subtipo es de cada calendario: nunca se toca al sincronizar
+await db.exec('reset role');
+const sub2 = (await db.query(`insert into public.subtipos(espacio_id,nombre,color,creado_por) values ($1,'Médica','#ef4444',$2) returning id`, [H2, U.jorge.id])).rows[0].id;
+await db.query(`update public.eventos set tipo='compromiso' where id = $1`, [cH1]);
+await db.query(`update public.eventos set subtipo_id=$2 where id=$1`, [cH2, sub2]);
+ok('Con otro tipo cambia el tipo en las copias (y el subtipo de H2 se conserva si sigue siendo cita)', (await evG(H2)).tipo === 'compromiso' && (await evG(H2)).subtipo_id === sub2, JSON.stringify(await evG(H2)));
+await como(U.jorge);
+await q(`update public.eventos set titulo='Revisión' where id=$1`, [cH1]);
+await db.exec('reset role');
+ok('Cambiar el título en H1 no toca el subtipo de la copia de H2', (await evG(H2)).subtipo_id === sub2 && (await evG(H2)).titulo === 'Revisión');
+await como(U.jorge);
+r = await q(`update public.eventos set tipo='plan' where id=$1 returning id`, [cH1]);
+ok('Pasar a «plan» no da error aunque otra copia tuviera subtipo', !r.error, r.error);
+await db.exec('reset role');
+ok('…y esa copia pierde el subtipo (ya no es cita)', (await evG(H2)).tipo === 'plan' && (await evG(H2)).subtipo_id === null, JSON.stringify(await evG(H2)));
+
+// quién puede: Paula es pareja en H1 y H3, pero no está en H2
+await como(U.paula);
+r = await q(`update public.eventos set titulo='Cena con Paula', hora_inicio='20:30' where id=$1 returning id`, [cH1]);
+ok('Paula (pareja en H1) cambia el evento de Jorge en H1', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+ok('…se actualiza en H3 (donde Paula también es pareja)', (await evG(H3)).titulo === 'Cena con Paula' && (await evG(H3)).hora_inicio === '20:30:00');
+ok('…pero NO en H2 (Paula no es de ese calendario)', (await evG(H2)).titulo === 'Revisión' && (await evG(H2)).hora_inicio === '21:00:00', JSON.stringify(await evG(H2)));
+await como(U.paula);
+r = await q(`select count(*)::int n from public.eventos where espacio_id=$1`, [H2]);
+ok('Paula sigue sin ver nada de H2', r.rows[0].n === 0, JSON.stringify(r.rows));
+
+// un amigo no puede cambiar el evento de otro, y por tanto tampoco sus copias
+await como(U.amigo);
+r = await q(`update public.eventos set titulo='Hackeado' where id=$1 returning id`, [cH1]);
+ok('Un «amigo» no puede cambiar el evento de Jorge en H1', !r.error && r.rows.length === 0, r.error);
+await db.exec('reset role');
+ok('…y nada cambia en las copias', (await evG(H1)).titulo === 'Cena con Paula' && (await evG(H3)).titulo === 'Cena con Paula');
+// ese mismo amigo es pareja en H2: puede cambiar la copia de H2, pero eso NO llega a H1 ni H3 (no es de esos calendarios)
+await como(U.amigo);
+r = await q(`update public.eventos set titulo='Cambio desde H2' where id=$1 returning id`, [cH2]);
+ok('El amigo (pareja en H2) sí puede cambiar la copia de Jorge en H2', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+ok('…pero H1 y H3 no cambian: no es de esos calendarios', (await evG(H1)).titulo === 'Cena con Paula' && (await evG(H3)).titulo === 'Cena con Paula', JSON.stringify([await evG(H1), await evG(H3)]));
+// Jorge vuelve a cambiar H1: la copia de H2 se actualiza (y se pisa lo del amigo)
+await como(U.jorge);
+await q(`update public.eventos set titulo='Cena final' where id=$1`, [cH1]);
+await db.exec('reset role');
+ok('Jorge cambia H1 y se sincroniza en todas', (await evG(H2)).titulo === 'Cena final' && (await evG(H3)).titulo === 'Cena final');
+
+// el tercero no ve ni toca nada
+await como(U.tercero);
+r = await q(`select count(*)::int n from public.eventos where grupo_copia=$1`, [G]);
+ok('Un tercero no ve ninguna copia', r.rows[0].n === 0, JSON.stringify(r.rows));
+r = await q(`update public.eventos set titulo='Hackeado' where grupo_copia=$1 returning id`, [G]);
+ok('…ni puede cambiarlas', !r.error && r.rows.length === 0, r.error);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por,grupo_copia) values ($1,$2,'plan','Intruso','2026-11-10',$2,$3)`, [H1, U.tercero.id, G]);
+ok('…ni meter un evento en el grupo desde un calendario ajeno', falla(r, 'row-level security'), r.error);
+r = await q(`select public.sincronizar_copias()`);
+ok('Nadie puede llamar a la función de sincronizar a mano', falla(r, 'permission denied'), r.error);
+r = await q(`select public.limpiar_grupo_copia()`);
+ok('…ni a la de limpiar grupos', falla(r, 'permission denied'), r.error);
+
+// borrar es por copia; con una sola copia restante deja de estar vinculada
+await como(U.jorge);
+r = await q(`delete from public.eventos where id=$1 returning id`, [cH3]);
+ok('Borrar una copia no borra las demás', !r.error && r.rows.length === 1 && (await q(`select count(*)::int n from public.eventos where grupo_copia=$1`, [G])).rows[0].n === 2, r.error);
+r = await q(`delete from public.eventos where id=$1 returning id`, [cH2]);
+r = await q(`select grupo_copia from public.eventos where id=$1`, [cH1]);
+ok('Cuando solo queda un evento, deja de estar vinculado', r.rows[0]?.grupo_copia === null, JSON.stringify(r.rows));
+
+// un cambio que solo toca otros datos no dispara nada (sin bucles) y las filas sin grupo funcionan como siempre
+r = await q(`update public.eventos set titulo='Solo' where id=$1 returning id`, [cH1]);
+ok('Un evento sin copias se cambia como siempre', !r.error && r.rows.length === 1, r.error);
+// repetición coherente en las copias
+r = await mkCopia(H1, '09:00', '00000000-0000-0000-0000-0000000000c2'); const rA = r.rows[0]?.id;
+r = await mkCopia(H3, '09:00', '00000000-0000-0000-0000-0000000000c2'); const rB = r.rows[0]?.id;
+r = await q(`update public.eventos set repeticion='semanal', dias_semana=array[1,3]::smallint[], repite_hasta='2026-12-31', hora_fin='10:00' where id=$1 returning id`, [rA]);
+ok('Convertir en semanal una copia se acepta', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+{
+  const x = (await db.query(`select repeticion, dias_semana, to_char(repite_hasta,'YYYY-MM-DD') h from public.eventos where id=$1`, [rB])).rows[0];
+  ok('…y la otra copia también se repite igual', x.repeticion === 'semanal' && JSON.stringify(x.dias_semana) === '[1,3]' && x.h === '2026-12-31', JSON.stringify(x));
+}
+await como(U.jorge);
+r = await q(`update public.eventos set repeticion=null, dias_semana=null, repite_hasta=null where id=$1 returning id`, [rB]);
+ok('Quitar la repetición en una copia se acepta (sin romper reglas en la otra)', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+ok('…y la otra deja de repetirse', (await db.query(`select repeticion from public.eventos where id=$1`, [rA])).rows[0].repeticion === null);
+
+console.log('\n10i. Avisos en el móvil (dispositivos y novedades)');
+await db.exec('reset role');
+const N1 = '00000000-0000-0000-0000-0000000000d1', N2 = '00000000-0000-0000-0000-0000000000d2';
+await db.query(`insert into public.espacios(id,nombre,creado_por) values ($1,'Casa N',$2),($3,'Otro N',$2)`, [N1, U.jorge.id, N2]);
+await db.query(`insert into public.miembros(espacio_id,user_id,relacion,color) values ($1,$2,'pareja','#111111'),($1,$3,'pareja','#222222'),($1,$4,'amigo','#333333'),($5,$2,'pareja','#111111'),($5,$3,'pareja','#222222')`, [N1, U.jorge.id, U.paula.id, U.amigo.id, N2]);
+const TK = (c) => c.repeat(32);
+const sacar = async () => {
+  await db.exec('reset role');
+  const rows = (await db.query(`select * from net.llamadas order by id`)).rows;
+  const duenos = new Map((await db.query(`select token, user_id from public.dispositivos`)).rows.map((x) => [x.token, x.user_id]));
+  await db.exec('truncate net.llamadas');
+  return rows.flatMap((x) => x.body.avisos.map((m) => ({ ...m, user_id: duenos.get(m.token), _h: x.headers, _u: x.url })));
+};
+const para = (ms, u) => ms.filter((m) => m.user_id === u.id);
+
+// registrar y quitar móviles
+await como('anon');
+r = await q(`select public.registrar_dispositivo($1)`, [TK('x')]);
+ok('Sin sesión no se puede registrar un móvil', falla(r, 'permission denied'), r.error);
+r = await q(`select * from public.dispositivos`);
+ok('Sin sesión no se puede leer la tabla de móviles', falla(r, 'permission denied'), r.error);
+await como(U.paula);
+r = await q(`select public.registrar_dispositivo($1)`, [TK('p')]);
+ok('Paula registra su móvil', !r.error, r.error);
+r = await q(`select * from public.dispositivos`);
+ok('Paula no puede leer la tabla de móviles ni la suya', falla(r, 'permission denied'), r.error);
+r = await q(`insert into public.dispositivos(user_id, token) values ($1, $2)`, [U.paula.id, TK('q')]);
+ok('…ni escribir directamente en ella', falla(r, 'permission denied'), r.error);
+r = await q(`select public.registrar_dispositivo('corto')`);
+ok('Un código de móvil demasiado corto se rechaza', !!r.error, r.error);
+await como(U.amigo);
+r = await q(`select public.registrar_dispositivo($1)`, [TK('a')]); ok('El amigo registra su móvil', !r.error, r.error);
+await como(U.jorge);
+r = await q(`select public.registrar_dispositivo($1)`, [TK('j')]); ok('Jorge registra su móvil', !r.error, r.error);
+r = await q(`select public.quitar_dispositivo($1)`, [TK('p')]);
+await db.exec('reset role');
+ok('Jorge no puede quitar el móvil de Paula', (await db.query(`select count(*)::int n from public.dispositivos where token=$1`, [TK('p')])).rows[0].n === 1);
+await como(U.tercero);
+await q(`select public.registrar_dispositivo($1)`, [TK('t')]);
+r = await q(`select public.quitar_dispositivo($1)`, [TK('p')]);
+await db.exec('reset role');
+ok('El tercero tampoco', (await db.query(`select count(*)::int n from public.dispositivos where token=$1`, [TK('p')])).rows[0].n === 1);
+await como(U.tercero);
+await q(`select public.registrar_dispositivo($1)`, [TK('p')]);
+await db.exec('reset role');
+ok('Si otra cuenta entra en el mismo móvil, el móvil pasa a esa cuenta (no se duplica)', (await db.query(`select user_id from public.dispositivos where token=$1`, [TK('p')])).rows.length === 1 && (await db.query(`select user_id from public.dispositivos where token=$1`, [TK('p')])).rows[0].user_id === U.tercero.id);
+await como(U.paula);
+await q(`select public.registrar_dispositivo($1)`, [TK('p')]);
+await db.exec('reset role');
+for (let i = 0; i < 9; i++) { await como(U.paula); await q(`select public.registrar_dispositivo($1)`, [String(i).repeat(32)]); }
+await db.exec('reset role');
+ok('Una persona tiene como máximo 8 móviles', (await db.query(`select count(*)::int n from public.dispositivos where user_id=$1`, [U.paula.id])).rows[0].n === 8);
+await db.query(`delete from public.dispositivos where user_id=$1`, [U.paula.id]);
+await db.query(`insert into public.dispositivos(user_id, token) values ($1, $2) on conflict (token) do nothing`, [U.paula.id, TK('p')]);
+await db.query(`delete from public.dispositivos where user_id=$1`, [U.tercero.id]);
+await db.query(`insert into public.dispositivos(user_id, token) values ($1, $2)`, [U.tercero.id, TK('t')]);
+await db.query(`delete from net.llamadas`);
+
+// sin clave compartida no sale nada, pero guardar funciona
+await como(U.jorge);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,creado_por) values ($1,$2,'plan','Sin clave','2026-11-20','10:00',$3) returning id`, [N1, U.paula.id, U.jorge.id]);
+ok('Sin la clave en Vault guardar un evento funciona igual', !r.error && r.rows.length === 1, r.error);
+ok('…y no se envía nada', (await sacar()).length === 0);
+await db.query(`insert into vault.secretos values ('avisos_secret','s3cret')`);
+
+// eventos nuevos
+await como(U.jorge);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,creado_por) values ($1,$2,'plan','Cena','2026-11-20','21:30',$3) returning id`, [N1, U.paula.id, U.jorge.id]);
+let ms = await sacar();
+ok('Jorge apunta un evento en la agenda de Paula: avisa a Paula', ms.length === 1 && ms[0].user_id === U.paula.id, JSON.stringify(ms));
+ok('…con quién, en qué calendario y qué es', ms[0]?.titulo === 'Jorge añadió un evento · Casa N' && ms[0]?.cuerpo === 'Cena · vie 20/11 21:30', JSON.stringify(ms[0]));
+ok('…usando la clave y la dirección de la función', ms[0]?._h['x-avisos-secret'] === 's3cret' && ms[0]?._u === 'https://qyvipsdbytpcedlovotk.supabase.co/functions/v1/notificar', JSON.stringify(ms[0]));
+const evPaula = r.rows[0]?.id;
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','Mío','2026-11-21',$2)`, [N1, U.jorge.id]);
+ok('Un evento solo tuyo no avisa a nadie (ni a ti)', (await sacar()).length === 0);
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values ($1,$2,'plan','Para todos','2026-11-22',true,$2)`, [N1, U.jorge.id]);
+ms = await sacar();
+ok('Un evento «de todos» avisa a todos menos a quien lo crea', ms.length === 2 && para(ms, U.paula).length === 1 && para(ms, U.amigo).length === 1 && para(ms, U.jorge).length === 0 && para(ms, U.tercero).length === 0, JSON.stringify(ms.map((m) => m.user_id)));
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,participantes,creado_por) values ($1,$2,'deporte','Pádel','2026-11-23',$3,$2)`, [N1, U.jorge.id, [U.jorge.id, U.paula.id]]);
+ms = await sacar();
+ok('Un evento de un grupo avisa solo a quienes están en el grupo', ms.length === 1 && ms[0].user_id === U.paula.id, JSON.stringify(ms.map((m) => m.user_id)));
+await como(U.paula);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','De Jorge','2026-11-24',$3)`, [N1, U.jorge.id, U.paula.id]);
+ms = await sacar();
+ok('Paula (pareja) apunta algo en la agenda de Jorge: avisa a Jorge', ms.length === 1 && ms[0].user_id === U.jorge.id && ms[0].titulo.startsWith('Paula añadió'), JSON.stringify(ms));
+// varios a la vez: un solo aviso con resumen
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,creado_por) select $1,$2,'plan','Evento '||g,('2026-12-0'||g)::date,'10:00',$3 from generate_series(1,5) g`, [N1, U.paula.id, U.jorge.id]);
+ms = await sacar();
+ok('Cinco eventos de golpe: un solo aviso con el resumen', ms.length === 1 && ms[0].titulo === 'Jorge añadió 5 eventos · Casa N' && ms[0].cuerpo === 'Evento 1, Evento 2, Evento 3 y 2 más', JSON.stringify(ms));
+// quien no tiene móvil no recibe llamada
+await db.exec('reset role');
+await db.query(`delete from public.dispositivos where user_id=$1`, [U.paula.id]);
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','A nadie','2026-11-25',$3)`, [N1, U.paula.id, U.jorge.id]);
+ok('Si nadie del evento tiene móvil registrado no se envía nada', (await sacar()).length === 0);
+await db.query(`insert into public.dispositivos(user_id, token) values ($1, $2)`, [U.paula.id, TK('p')]);
+// el tercero no recibe nada nunca
+await como(U.jorge);
+await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,compartido,creado_por) values ($1,$2,'plan','Otro todos','2026-11-26',true,$2)`, [N2, U.jorge.id]);
+ms = await sacar();
+ok('En otro calendario solo avisa a sus miembros (el amigo y el tercero no)', ms.length === 1 && ms[0].user_id === U.paula.id && ms[0].titulo.endsWith('· Otro N'), JSON.stringify(ms));
+
+// cambios
+await como(U.paula);
+r = await q(`update public.eventos set hora_inicio='22:00', titulo='Cena fuera' where id=$1 returning id`, [evPaula]);
+ms = await sacar();
+ok('Quien cambia su propio evento no se avisa a sí misma', ms.every((m) => m.user_id !== U.paula.id), JSON.stringify(ms));
+await como(U.jorge);
+await q(`update public.eventos set hora_inicio='22:30', fecha='2026-11-21' where id=$1`, [evPaula]);
+ms = await sacar();
+ok('Jorge cambia la hora y el día del evento de Paula: avisa a Paula diciendo qué cambió', ms.length === 1 && ms[0].user_id === U.paula.id && ms[0].titulo === 'Jorge cambió un evento · Casa N' && ms[0].cuerpo === 'Cena fuera · sáb 21/11 22:30 · Cambió el día, la hora', JSON.stringify(ms));
+await q(`update public.eventos set hechas = array['2026-11-21'::date] where id=$1`, [evPaula]);
+ok('Marcar una tarea como hecha no avisa', (await sacar()).length === 0);
+await q(`update public.eventos set excepciones = array['2026-11-28'::date] where id=$1`, [evPaula]);
+ms = await sacar();
+ok('Quitar un día de una serie sí avisa', ms.length === 1 && ms[0].cuerpo.endsWith('Cambió los días'), JSON.stringify(ms));
+await q(`update public.eventos set grupo_copia = gen_random_uuid() where id=$1`, [evPaula]);
+ok('Un cambio interno (vincular copias) no avisa', (await sacar()).length === 0);
+// añadir a alguien a un grupo
+await q(`update public.eventos set titulo=titulo where espacio_id=$1`, [N1]);
+ok('Guardar sin cambiar nada no avisa', (await sacar()).length === 0);
+await como(U.jorge);
+const evGrupo = (await q(`select id from public.eventos where espacio_id=$1 and titulo='Pádel'`, [N1])).rows[0].id;
+r = await q(`update public.eventos set participantes = $2 where id=$1 returning id`, [evGrupo, [U.jorge.id, U.paula.id, U.amigo.id]]);
+ms = await sacar();
+ok('Añadir a alguien a un evento de grupo le avisa solo a esa persona («te añadió»)', !r.error && ms.length === 1 && ms[0].user_id === U.amigo.id && ms[0].titulo === 'Jorge te añadió a un evento · Casa N', r.error || JSON.stringify(ms));
+// copias vinculadas: un solo aviso aunque haya varias copias
+await db.exec('reset role');
+const GR = '00000000-0000-0000-0000-0000000000c9';
+await db.query(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,creado_por,grupo_copia) values ($1,$3,'plan','Copiado','2026-11-27','10:00',$3,$4),($2,$3,'plan','Copiado','2026-11-27','10:00',$3,$4)`, [N1, N2, U.jorge.id, GR]);
+await sacar();
+await como(U.paula);
+await q(`update public.eventos set hora_inicio='11:00' where espacio_id=$1 and grupo_copia=$2`, [N1, GR]);
+ms = await sacar();
+ok('Cambiar un evento con copias avisa UNA vez (no una por copia)', ms.length === 1 && ms[0].user_id === U.jorge.id, JSON.stringify(ms));
+await db.exec('reset role');
+ok('…y la copia sí se ha sincronizado', (await db.query(`select hora_inicio from public.eventos where espacio_id=$1 and grupo_copia=$2`, [N2, GR])).rows[0].hora_inicio === '11:00:00');
+// el amigo no puede cambiar nada y no avisa
+await como(U.amigo);
+r = await q(`update public.eventos set titulo='Hackeado' where id=$1 returning id`, [evPaula]);
+ok('Un cambio sin permiso no avisa a nadie', r.rows.length === 0 && (await sacar()).length === 0);
+// sin sesión de usuario (SQL Editor, tareas internas) no se avisa
+await db.exec('reset role');
+await db.query(`select set_config('request.jwt.claims','',false)`);
+await db.query(`update public.eventos set titulo='Cambio interno' where id=$1`, [evPaula]);
+ok('Un cambio hecho sin usuario (por ejemplo desde el SQL Editor) no avisa', (await sacar()).length === 0);
+// robustez: que falle el envío no impide guardar
+await db.exec(`create or replace function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds int default 5000) returns bigint language plpgsql as $$ begin raise exception 'sin red'; end $$`);
+await como(U.jorge);
+r = await q(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,creado_por) values ($1,$2,'plan','Falla el envío','2026-11-29',$3) returning id`, [N1, U.paula.id, U.jorge.id]);
+ok('Aunque falle el envío del aviso, el evento se guarda', !r.error && r.rows.length === 1, r.error);
+r = await q(`update public.eventos set titulo='Falla otra vez' where id=$1 returning id`, [r.rows[0]?.id]);
+ok('…y también al cambiarlo', !r.error && r.rows.length === 1, r.error);
+await db.exec('reset role');
+await db.exec(`create or replace function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds int default 5000) returns bigint language sql as $$ insert into net.llamadas(url, headers, body) values (url, headers, body) returning id::bigint $$`);
+// funciones internas fuera de alcance
+await como(U.jorge);
+for (const f of ['empujar_avisos(\'[]\'::jsonb)', 'avisar_eventos_nuevos()', 'avisar_eventos_cambiados()', 'fecha_corta_es(now()::date)', 'destinatarios_evento(null,true,null,null)']) {
+  r = await q(`select public.${f}`);
+  ok(`Nadie puede llamar a ${f.split('(')[0]} a mano`, falla(r, 'permission denied'), r.error);
+}
+// probar aviso
+await como('anon');
+r = await q(`select public.probar_aviso()`);
+ok('Sin sesión no se puede probar el aviso', falla(r, 'permission denied'), r.error);
+await db.exec('reset role');
+await db.query(`delete from net.llamadas`);
+await db.query(`delete from vault.secretos`);
+await como(U.jorge);
+r = await q(`select public.probar_aviso() as r`);
+ok('Sin la clave en Vault «probar» dice que falta la clave y no envía nada', r.rows[0]?.r === 'sin_clave' && (await sacar()).length === 0, JSON.stringify(r));
+await db.exec('reset role'); await db.query(`insert into vault.secretos values ('avisos_secret','s3cret')`);
+await como(U.jorge);
+r = await q(`select public.probar_aviso() as r`);
+ms = await sacar();
+ok('«Probar» manda un aviso solo a los móviles de quien pulsa', r.rows[0]?.r === 'enviado' && ms.length === 1 && ms[0].user_id === U.jorge.id && ms[0].titulo === '🔔 Organizapp', JSON.stringify([r, ms]));
+await como(U.tercero);
+await q(`select public.quitar_dispositivo($1)`, [TK('t')]);
+r = await q(`select public.probar_aviso() as r`);
+ok('Quien no tiene móvil registrado recibe «sin_movil» y no se envía nada', r.rows[0]?.r === 'sin_movil' && (await sacar()).length === 0, JSON.stringify(r));
+await db.exec('reset role');
+await db.exec(`create or replace function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds int default 5000) returns bigint language plpgsql as $$ begin raise exception 'sin red'; end $$`);
+await como(U.jorge);
+r = await q(`select public.probar_aviso() as r`);
+ok('Si falla el envío, «probar» dice «error» (sin romper nada)', r.rows[0]?.r === 'error', JSON.stringify(r));
+await db.exec('reset role');
+await db.exec(`create or replace function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds int default 5000) returns bigint language sql as $$ insert into net.llamadas(url, headers, body) values (url, headers, body) returning id::bigint $$`);
+await db.query(`delete from vault.secretos`);
+// borrar la cuenta quita sus móviles
+await como(U.amigo);
+r = await q(`select public.borrar_mi_cuenta()`);
+await db.exec('reset role');
+ok('Al borrar la cuenta se borran también sus móviles', (await db.query(`select count(*)::int n from public.dispositivos where token=$1`, [TK('a')])).rows[0].n === 0, r.error);
+await db.query(`delete from vault.secretos`);
+
 // ---------- 11. Migración 04 sobre la estructura anterior (v11) ----------
 console.log('\n11. Migración 04 sobre una base creada con la versión anterior');
 const v11 = new PGlite();
@@ -1174,6 +1515,34 @@ const mig11 = fs.readFileSync(process.env.SQL11_PATH || '/mnt/user-data/outputs/
 let e11 = null;
 try { await v11.exec(mig11); await v11.exec(mig11); } catch (e) { e11 = e.message; }
 ok('La migración 11 se aplica dos veces sin errores', !e11, e11);
+// Copias que ya existían antes de la migración 12: se vinculan solas (y solo las que son iguales de verdad)
+const E1 = '00000000-0000-0000-0000-0000000000e1', E2 = '00000000-0000-0000-0000-0000000000e2';
+await v11.exec(`insert into public.espacios(id,nombre,creado_por) values ('${E2}','Otro','${U.jorge.id}');
+  insert into public.miembros(espacio_id,user_id,relacion,color) values ('${E2}','${U.jorge.id}','pareja','#abcdef'),('${E2}','${U.paula.id}','pareja','#fedcba');
+  insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,creado_por) values
+    ('${E2}','${U.jorge.id}','plan',' cena ','2026-10-30',null,'${U.jorge.id}'),
+    ('${E2}','${U.paula.id}','plan','Cena','2026-10-30',null,'${U.paula.id}'),
+    ('${E1}','${U.jorge.id}','plan','Pádel','2026-10-31','18:00','${U.jorge.id}'),
+    ('${E1}','${U.jorge.id}','plan','Pádel','2026-10-31','18:00','${U.jorge.id}'),
+    ('${E2}','${U.jorge.id}','plan','Pádel','2026-11-01','18:00','${U.jorge.id}')`);
+const mig12 = fs.readFileSync(process.env.SQL12_PATH || '/mnt/user-data/outputs/organizapp/sql/12_copias_vinculadas.sql', 'utf8');
+let e12 = null;
+try { await v11.exec(mig12); await v11.exec(mig12); } catch (e) { e12 = e.message; }
+ok('La migración 12 se aplica dos veces sin errores', !e12, e12);
+{
+  const g = (await v11.query(`select titulo, owner_id, espacio_id, fecha::text f, grupo_copia from public.eventos order by fecha, espacio_id, owner_id, titulo`)).rows;
+  const cena = g.filter((x) => x.f === '2026-10-30' && x.owner_id === U.jorge.id);
+  ok('Migrada: la misma cena de Jorge en dos calendarios queda vinculada (aunque cambien mayúsculas y espacios)', cena.length === 2 && cena.filter((x) => x.grupo_copia).length === 2 && cena.filter((x) => x.grupo_copia)[0].grupo_copia === cena.filter((x) => x.grupo_copia)[1].grupo_copia, JSON.stringify(cena));
+  ok('Migrada: la cena de otra persona no se vincula', g.find((x) => x.owner_id === U.paula.id).grupo_copia === null);
+  ok('Migrada: dos iguales en el mismo calendario no se vinculan entre sí', g.filter((x) => x.f === '2026-10-31').every((x) => x.grupo_copia === null), JSON.stringify(g.filter((x) => x.f === '2026-10-31')));
+  ok('Migrada: un evento distinto (otro día) no se vincula', g.find((x) => x.f === '2026-11-01').grupo_copia === null);
+}
+await v11.exec(`delete from public.eventos where fecha > '2026-10-30' or owner_id = '${U.paula.id}' or espacio_id = '${E2}';
+  delete from public.miembros where espacio_id = '${E2}'; delete from public.espacios where id = '${E2}'; update public.eventos set grupo_copia = null;`);
+const mig13 = fs.readFileSync(process.env.SQL13_PATH || '/mnt/user-data/outputs/organizapp/sql/13_novedades_push.sql', 'utf8');
+let e13 = null;
+try { await v11.exec(mig13); await v11.exec(mig13); } catch (e) { e13 = e.message; }
+ok('La migración 13 se aplica dos veces sin errores', !e13, e13);
 {
   const ev = (await v11.query(`select id, espacio_id, owner_id from public.eventos limit 1`)).rows[0];
   const ins = (hi, hf, ex) => v11.query(`insert into public.eventos(espacio_id,owner_id,tipo,titulo,fecha,hora_inicio,hora_fin,dias_extra,creado_por) values ($1,$2,'plan','N','2026-11-06',$3,$4,$5,$2)`, [ev.espacio_id, ev.owner_id, hi, hf, ex]).then(() => null, (e) => e.message);
@@ -1197,7 +1566,7 @@ for (const [nombre, consulta] of [
   ['los permisos de tablas', `select table_name||':'||grantee||':'||privilege_type v from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated')`],
 ]) {
   const a = await lista(db, consulta), b = await lista(v11, consulta);
-  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09+10+11) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
+  ok(`Una base nueva (01) y una migrada (04+05+06+07+08+09+10+11+12+13) tienen ${nombre} idénticos`, JSON.stringify(a) === JSON.stringify(b), a.filter((x) => !b.includes(x)).concat(b.filter((x) => !a.includes(x))).join(' | '));
 }
 
 await como('anon');

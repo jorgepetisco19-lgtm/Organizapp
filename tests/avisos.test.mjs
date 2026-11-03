@@ -103,3 +103,12 @@ test('entradas vacías o raras no rompen nada', () => {
   assert.deepEqual(planificarAvisos(undefined, { userId: YO, ahora: AHORA }), []);
   assert.deepEqual(plan([ev({ participantes: [] , owner_id: ELLA })]), []);
 });
+
+test('el mismo evento copiado en dos calendarios avisa una sola vez; si cambia la hora o el título, son dos', () => {
+  const a = ev({ titulo: 'Cena', hora_inicio: '20:00:00', espacio_id: 'cal1' });
+  const b = ev({ titulo: ' cena ', hora_inicio: '20:00:00', espacio_id: 'cal2' });
+  assert.equal(plan([a, b]).length, 1);
+  assert.equal(plan([a, ev({ titulo: 'Cena', hora_inicio: '20:30:00' })]).length, 2);
+  assert.equal(plan([a, ev({ titulo: 'Cine', hora_inicio: '20:00:00' })]).length, 2);
+  assert.equal(plan([a, ev({ titulo: 'Cena', hora_inicio: '20:00:00', fecha: '2026-10-24' })]).length, 2);
+});

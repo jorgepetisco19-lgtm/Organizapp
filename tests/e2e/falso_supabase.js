@@ -79,6 +79,11 @@ var supabase = (function () {
       if (this.op === 'update') {
         const tocadas = tabla.filter((r) => this.fil.every((f) => f(r)));
         for (const r of tocadas) Object.assign(r, this.p, this.p.hora_inicio !== undefined ? { hora_inicio: hora(this.p.hora_inicio), hora_fin: hora(this.p.hora_fin) } : {});
+        // copias vinculadas (SQL 12): el cambio de contenido de un evento llega a las otras copias de su grupo
+        if (this.t === 'eventos') {
+          const CAMPOS = ['tipo', 'titulo', 'fecha', 'hora_inicio', 'hora_fin', 'notas', 'repeticion', 'repite_hasta', 'dias_semana', 'dias_extra', 'hechas'];
+          for (const r of tocadas) if (r.grupo_copia) for (const c of tabla) if (c !== r && c.grupo_copia === r.grupo_copia) for (const k of CAMPOS) c[k] = r[k];
+        }
         guardar(db);
         return this.retorna ? dev(tocadas) : { data: null, error: null };
       }
@@ -179,6 +184,26 @@ var supabase = (function () {
       db.espacios = db.espacios.filter((x) => x.id !== p_espacio);
       for (const t of ['miembros', 'invitaciones', 'eventos', 'menu', 'lineas', 'subtipos']) db[t] = db[t].filter((x) => x.espacio_id !== p_espacio);
       guardar(db); return { data: null, error: null };
+    },
+    // avisos en el móvil (SQL 13)
+    registrar_dispositivo({ p_token }) {
+      const u = sesionActual(); const db = cargar();
+      if (localStorage.getItem('falso_sin_sql13')) return err('Could not find the function public.registrar_dispositivo(p_token) in the schema cache');
+      if (!p_token || p_token.length < 20) return err('Código de móvil no válido');
+      db.dispositivos = (db.dispositivos || []).filter((d) => d.token !== p_token).concat([{ user_id: u.id, token: p_token }]);
+      guardar(db);
+      return { data: null, error: null };
+    },
+    quitar_dispositivo({ p_token }) {
+      const u = sesionActual(); const db = cargar();
+      db.dispositivos = (db.dispositivos || []).filter((d) => !(d.token === p_token && d.user_id === u.id));
+      guardar(db);
+      return { data: null, error: null };
+    },
+    probar_aviso() {
+      const u = sesionActual(); const db = cargar();
+      if (localStorage.getItem('falso_sin_clave')) return { data: 'sin_clave', error: null };
+      return { data: (db.dispositivos || []).some((d) => d.user_id === u.id) ? 'enviado' : 'sin_movil', error: null };
     },
     borrar_mi_cuenta() {
       const u = sesionActual(); const db = cargar();

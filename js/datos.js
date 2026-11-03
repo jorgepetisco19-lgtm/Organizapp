@@ -58,6 +58,11 @@ export async function borrarMiCuenta() {
   ok(await sb.rpc('borrar_mi_cuenta'));
   try { await sb.auth.signOut({ scope: 'local' }); } catch { /* la sesión ya no es válida */ }
 }
+// ---------- avisos en el móvil (SQL 13): el móvil se apunta con su código para que lleguen los avisos de cambios ----------
+export async function registrarDispositivo(token) { ok(await sb.rpc('registrar_dispositivo', { p_token: token })); }
+export async function quitarDispositivo(token) { ok(await sb.rpc('quitar_dispositivo', { p_token: token })); }
+// Manda un aviso de prueba a mis móviles. Devuelve 'enviado' | 'sin_movil' | 'sin_clave' | 'error'.
+export async function probarAviso() { return ok(await sb.rpc('probar_aviso')); }
 export const alCambiarSesion = (cb) => sb.auth.onAuthStateChange(cb);
 
 // ---------- contexto: perfil, calendarios, personas, invitaciones ----------
@@ -148,6 +153,10 @@ export const eventosDe = async (espacioId, ownerId) =>
 export async function crearEventos(filas) {
   for (let i = 0; i < filas.length; i += 300) ok(await sb.from('eventos').insert(filas.slice(i, i + 300)));
   eventosCambiaron();
+}
+// Pone el mismo grupo de copias a eventos que ya existían (al importarlos a otro calendario). Una a una: así no hay que enviar el resto de sus datos.
+export async function vincularOriginales(lista) {
+  for (const { id, grupo } of lista) exactamente(ok(await sb.from('eventos').update({ grupo_copia: grupo }).eq('id', id).select('id')), 1);
 }
 // Todos los eventos del calendario que quien llama puede ver (para detectar los que ya están al importar)
 export const eventosEspacio = async (espacioId) => ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId));
