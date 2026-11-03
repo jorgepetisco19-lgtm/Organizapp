@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "121758488970",
+    "project_id": "organizapp-de057",
+    "storage_bucket": "organizapp-de057.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:121758488970:android:15df35bb2df36e21ec1073",
+        "android_client_info": {
+          "package_name": "io.github.jorgepetisco19lgtm.organizapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCfhavSokjA6_Db0pvdxXmvNJMCxqzL6Bg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
