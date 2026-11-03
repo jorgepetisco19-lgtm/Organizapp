@@ -845,7 +845,6 @@ function vistaInicio() {
   const dia = esManana ? manana : hoy;
   const mapa = expandirEventos(S.eventos.filter(eventoVisible), hoy, manana);
   const delDia = (mapa.get(dia) || []).filter((x) => S.tiposInicio.has(x.ev.tipo));
-  const tareasHoy = (mapa.get(hoy) || []).filter((x) => x.ev.tipo === 'tarea');
 
   return el('div', {},
     el('div', { class: 'seg', role: 'group', 'aria-label': 'Día' },
@@ -855,9 +854,6 @@ function vistaInicio() {
     (S.miembros.length === 1 && S.relacion === 'pareja' && S.espacios.length === 1) ? el('div', { class: 'tarjeta aviso-invitar' },
       el('p', {}, 'Ahora mismo estás solo en este calendario.'),
       el('button', { class: 'primario', onclick: () => { S.tab = 'mas'; render(); } }, 'Invitar a tu pareja')) : null,
-    esManana ? el('section', { class: 'seccion preparar' },
-      el('h3', {}, '🛠️ Para dejar preparado hoy'),
-      agendaEventos(tareasHoy, 'Nada que preparar hoy.', false)) : null,
     bloqueMenuDia(dia, `🍽️ Comida de ${esManana ? 'mañana' : 'hoy'}`),
     el('section', { class: 'seccion' },
       el('h3', {}, `🗓️ Agenda de ${esManana ? 'mañana' : 'hoy'}`),

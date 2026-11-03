@@ -113,7 +113,8 @@ with sync_playwright() as p:
     page.locator('.seg button', has_text='Mañana').click()
     page.wait_for_timeout(200)
     txt = page.locator('#contenido').inner_text()
-    comprobar('Para dejar preparado hoy' in txt or 'preparar' in txt.lower(), 'sección de preparar en Mañana')
+    comprobar('Para dejar preparado' not in txt, 'Mañana ya no tiene la sección «Para dejar preparado hoy»')
+    comprobar('Sacar pollo' not in txt, 'la tarea de hoy no se repite en Mañana')
     comprobar('Cine' in txt, 'el plan de mañana (24/10) aparece')
     page.screenshot(path=f'{CAP}/03-inicio-manana.png', full_page=True)
 
