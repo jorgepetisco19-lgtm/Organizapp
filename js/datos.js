@@ -151,7 +151,9 @@ export async function cargarMenu(espacioId, desde, hasta) {
 export const eventosDe = async (espacioId, ownerId) =>
   ok(await sb.from('eventos').select('*').eq('espacio_id', espacioId).eq('owner_id', ownerId));
 export async function crearEventos(filas) {
-  for (let i = 0; i < filas.length; i += 300) ok(await sb.from('eventos').insert(filas.slice(i, i + 300)));
+  // «defaultToNull: false»: si una fila del lote no trae una columna (p. ej. «excepciones»), se usa su valor por defecto en vez de NULL.
+  // Sin esto, al guardar un evento junto con copias en otros calendarios, la fila que no la traía fallaba (columna NOT NULL).
+  for (let i = 0; i < filas.length; i += 300) ok(await sb.from('eventos').insert(filas.slice(i, i + 300), { defaultToNull: false }));
   eventosCambiaron();
 }
 // Pone el mismo grupo de copias a eventos que ya existían (al importarlos a otro calendario). Una a una: así no hay que enviar el resto de sus datos.

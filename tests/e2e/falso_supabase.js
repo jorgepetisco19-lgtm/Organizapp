@@ -35,7 +35,7 @@ var supabase = (function () {
   class Consulta {
     constructor(tabla) { this.t = tabla; this.op = 'select'; this.fil = []; this.sing = false; this.retorna = false; }
     select() { if (this.op !== 'select') this.retorna = true; return this; }
-    insert(p) { this.op = 'insert'; this.p = [].concat(p); return this; }
+    insert(p, o) { this.op = 'insert'; this.p = [].concat(p); this.nulosPorDefecto = !(o && o.defaultToNull === false); return this; }
     upsert(p, o) { this.op = 'upsert'; this.p = [].concat(p); this.o = o || {}; return this; }
     update(p) { this.op = 'update'; this.p = p; return this; }
     delete() { this.op = 'delete'; return this; }
@@ -60,6 +60,15 @@ var supabase = (function () {
       if (this.op === 'select') return dev(tabla.filter((r) => this.fil.every((f) => f(r))));
       if (this.op === 'insert' || this.op === 'upsert') {
         const nuevas = [];
+        // Como PostgREST: en un insert de varias filas las columnas son la unión de todas las claves, y a la fila que no trae una
+        // se le pone NULL (no su valor por defecto) salvo que se pida «defaultToNull: false». Con columnas NOT NULL eso da error real.
+        if (this.op === 'insert' && this.t === 'eventos' && this.nulosPorDefecto) {
+          const union = [...new Set(this.p.flatMap((x) => Object.keys(x)))];
+          for (const p of this.p) for (const k of union) if (!(k in p)) p[k] = null;
+          for (const p of this.p) for (const k of ['excepciones', 'hechas', 'dias_extra', 'compartido']) {
+            if (union.includes(k) && p[k] === null) return err(`null value in column "${k}" of relation "eventos" violates not-null constraint`, '23502');
+          }
+        }
         for (const p of this.p) {
           const fila = { id: uuid(), creado: new Date().toISOString(), creada: new Date().toISOString(), ...p };
           if (this.t === 'lineas') { fila.hecha = fila.hecha ?? false; fila.evento_id = fila.evento_id ?? null; fila.orden = fila.orden ?? Date.now(); }
