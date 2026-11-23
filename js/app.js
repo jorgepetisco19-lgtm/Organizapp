@@ -9,6 +9,7 @@ import {
 } from './util.js';
 import { crearXlsx, leerXlsx } from './xlsx.js';
 import * as N from './nativo.js';
+import { interpretarFrase } from './frase.js';
 import { planificarAvisos, AVISO_MINUTOS, AVISO_MIN_DEFECTO, AVISO_DIAS } from './avisos.js';
 import { URL_APP, URL_DESCARGA } from './config.js';
 
@@ -851,6 +852,7 @@ function vistaInicio() {
       [['hoy', 'Hoy'], ['manana', 'Mañana']].map(([id, nom]) =>
         el('button', { type: 'button', 'aria-pressed': String(S.inicioDia === id), onclick: () => { S.inicioDia = id; render(); } }, nom))),
     el('h2', { class: 'fecha-grande' }, cap(fechaLarga(dia))),
+    el('button', { type: 'button', class: 'frase-boton', onclick: abrirFrase }, '💬 Crear con una frase'),
     (S.miembros.length === 1 && S.relacion === 'pareja' && S.espacios.length === 1) ? el('div', { class: 'tarjeta aviso-invitar' },
       el('p', {}, 'Ahora mismo estás solo en este calendario.'),
       el('button', { class: 'primario', onclick: () => { S.tab = 'mas'; render(); } }, 'Invitar a tu pareja')) : null,
@@ -1429,10 +1431,11 @@ function tarjetaSubtipos() {
 }
 
 // ---------- editor de eventos ----------
-function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
+function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null, borrador = null }) {
   const nuevo = !ev;
+  const borr = ev ? null : borrador; // datos de partida cuando viene de «Crear con una frase»
   const editable = nuevo || puedeEditarEv(ev);
-  let tipo = ev?.tipo || 'plan';
+  let tipo = ev?.tipo || borr?.tipo || 'plan';
   let para = ev ? (ev.compartido ? 'todos' : ev.owner_id) : S.user.id; // id de persona o 'todos' (calendarios de dos personas, o sin permiso para elegir varias)
   // Con 3 o más personas, quien tiene rol «pareja» puede elegir varias a la vez (un solo evento para ese grupo).
   const todosIds = S.miembros.map((m) => m.id);
@@ -1446,10 +1449,10 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
     onclick: () => { tipo = t.id; tipoBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(TIPOS[i].id === tipo))); actualizarSecciones(); },
   }, el('span', { class: 'ico' }, t.icono), t.nombre));
 
-  const titulo = el('input', { type: 'text', maxLength: 120, placeholder: 'Ej.: Pilates, Cine, Hacer la crema', value: ev?.titulo || '', disabled: !editable, 'aria-label': 'Título' });
+  const titulo = el('input', { type: 'text', maxLength: 120, placeholder: 'Ej.: Pilates, Cine, Hacer la crema', value: ev?.titulo || borr?.titulo || '', disabled: !editable, 'aria-label': 'Título' });
   const fechaIn = el('input', { type: 'date', value: ev ? ev.fecha : (fecha || hoyISO()), disabled: !editable, 'aria-label': 'Fecha' });
-  const iniIn = campoHora({ value: hhmm(ev?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
-  const finIn = campoHora({ value: hhmm(ev?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
+  const iniIn = campoHora({ value: hhmm(ev?.hora_inicio || borr?.hora_inicio), disabled: !editable, 'aria-label': 'Hora de inicio' });
+  const finIn = campoHora({ value: hhmm(ev?.hora_fin || borr?.hora_fin), disabled: !editable, 'aria-label': 'Hora de fin' });
 
   // Fecha de fin (opcional): para lo que acaba otro día (turno de noche, viaje…). Por dentro se guarda como «días que dura de más»,
   // así sirve también para lo que se repite (cada vez acaba esos días después de empezar) y no se descuadra al mover la fecha.
@@ -1478,14 +1481,14 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   iniIn.addEventListener('blur', autoSiguiente);
   finIn.addEventListener('blur', autoSiguiente);
   const repSel = el('select', { disabled: !editable, 'aria-label': 'Repetición', onchange: () => { hastaWrap.hidden = repSel.value !== 'semanal'; diasWrap.hidden = repSel.value !== 'semanal'; pintarDias(); pintarFinHint(); actualizarSecciones(); } },
-    [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || '') === v }, n)));
-  const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
-  const hastaWrap = el('label', { hidden: (ev?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
+    [['', 'No se repite'], ['semanal', 'Cada semana']].map(([v, n]) => el('option', { value: v, selected: (ev?.repeticion || borr?.repeticion || '') === v }, n)));
+  const hastaIn = el('input', { type: 'date', value: ev?.repite_hasta || borr?.repite_hasta || '', disabled: !editable, 'aria-label': 'Repetir hasta' });
+  const hastaWrap = el('label', { hidden: (ev?.repeticion || borr?.repeticion || '') !== 'semanal' }, 'Repetir hasta (opcional)', hastaIn);
 
   // Días de la semana en que se repite (botones L M X J V S D). Empieza con el día de la fecha elegida.
   const fechaBase = ev ? ev.fecha : (fecha || hoyISO());
-  let diasSel = new Set(ev?.dias_semana?.length ? ev.dias_semana.map(Number) : [diaSemana(fechaBase)]);
-  let diasTocados = !!ev?.dias_semana?.length;
+  let diasSel = new Set(ev?.dias_semana?.length ? ev.dias_semana.map(Number) : borr?.dias?.length ? borr.dias : [diaSemana(fechaBase)]);
+  let diasTocados = !!ev?.dias_semana?.length || !!borr?.dias?.length;
   const diasHint = el('p', { class: 'suave dias-hint' });
   const diasBtns = ['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((letra, i) => el('button', {
     type: 'button', class: 'dia-btn', 'aria-label': cap(nombreDia(i)), disabled: !editable,
@@ -1494,7 +1497,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
       diasTocados = true; pintarDias();
     },
   }, letra));
-  const diasWrap = el('div', { class: 'dias-semana', hidden: (ev?.repeticion || '') !== 'semanal' },
+  const diasWrap = el('div', { class: 'dias-semana', hidden: (ev?.repeticion || borr?.repeticion || '') !== 'semanal' },
     el('span', { class: 'etq' }, 'Qué días de la semana'),
     el('div', { class: 'dias-fila', role: 'group', 'aria-label': 'Días de la semana' }, diasBtns),
     diasHint);
@@ -1713,6 +1716,68 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null }) {
   const cerrar = modal(nuevo ? 'Nuevo evento' : (editable ? 'Editar evento' : 'Evento'), cuerpo, () => { if (huboCambioPasos) { S.rango = null; cargarVista(true); } });
   actualizarSecciones();
   if (nuevo) setTimeout(() => titulo.focus(), 50);
+}
+
+// ---------- crear un evento con una frase («cita dentista el martes a las 12») ----------
+const EJEMPLOS_FRASE = ['cita dentista el martes a las 12', 'tarea sacar el pollo mañana', 'deporte pádel todos los sábados a las 10'];
+function abrirFrase() {
+  const ahoraHM = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+  const entrada = el('textarea', {
+    rows: 2, maxLength: 300, 'aria-label': 'Frase', placeholder: 'Escribe o dicta con el micrófono del teclado…',
+    autocapitalize: 'sentences', spellcheck: 'false', enterKeyHint: 'done',
+  });
+  const prev = el('div', { class: 'frase-prev', 'aria-live': 'polite' });
+  const bGuardar = el('button', { type: 'button', class: 'primario', disabled: true }, 'Guardar');
+  const bAjustar = el('button', { type: 'button', disabled: true }, 'Ajustar antes');
+  let r = null;
+
+  function pintar() {
+    const texto = entrada.value.trim();
+    r = texto ? interpretarFrase(texto, { hoy: hoyISO(), ahora: ahoraHM() }) : null;
+    bGuardar.disabled = bAjustar.disabled = !(r && r.ok);
+    if (!r) { prev.replaceChildren(el('p', { class: 'suave' }, 'Empieza con «cita», «plan», «tarea» o «deporte» si quieres elegir el tipo; si no, será un plan. Di el día y la hora como lo dirías normalmente.')); return; }
+    const t = TIPOS.find((x) => x.id === r.tipo);
+    const hoy = hoyISO();
+    const rel = r.fecha === hoy ? ' · hoy' : r.fecha === sumarDias(hoy, 1) ? ' · mañana' : '';
+    const filas = [
+      el('div', { class: 'frase-tit' }, r.ok ? r.titulo : 'Falta decir qué es'),
+      el('div', {}, `${t.icono} ${t.nombre}`),
+      el('div', {}, `🗓️ ${r.repeticion ? 'Empieza: ' : ''}${cap(fechaLarga(r.fecha))}${rel}${r.sinDia && !r.repeticion ? ' (no has dicho el día)' : ''}`),
+      el('div', {}, r.hora_inicio ? `🕒 ${r.hora_inicio}${r.hora_fin ? ' – ' + r.hora_fin : ''}` : '🕒 Sin hora'),
+    ];
+    if (r.repeticion) filas.push(el('div', {}, `🔁 ${cap(descripcionRepeticion({ dias_semana: r.dias }))}${r.repite_hasta ? ` hasta el ${fechaLarga(r.repite_hasta)}` : ''}`));
+    r.avisos.forEach((a) => filas.push(el('div', { class: 'suave' }, '⚠️ ' + a)));
+    prev.replaceChildren(...filas);
+  }
+  entrada.addEventListener('input', pintar);
+
+  bAjustar.onclick = () => { if (!r || !r.ok) return; const borrador = r; cerrar(); abrirEditorEvento({ fecha: borrador.fecha, borrador }); };
+  bGuardar.onclick = () => {
+    if (!r || !r.ok) return null;
+    const x = r;
+    return conCarga(bGuardar, async () => {
+      await D.crearEventos([{
+        espacio_id: S.espacio.id, owner_id: S.user.id, creado_por: S.user.id, compartido: false,
+        tipo: x.tipo, titulo: x.titulo, fecha: x.fecha, hora_inicio: x.hora_inicio, hora_fin: x.hora_fin, notas: null,
+        repeticion: x.repeticion, repite_hasta: x.repite_hasta,
+        ...(x.dias_semana ? { dias_semana: x.dias_semana } : {}),
+      }]);
+      cerrar();
+      aviso(`Guardado: ${x.titulo} · ${fechaCorta(x.fecha)}${x.hora_inicio ? ' ' + x.hora_inicio : ''}`);
+      await cargarVista(true);
+    });
+  };
+
+  const cuerpo = el('div', { class: 'formulario' },
+    el('p', { class: 'suave' }, 'Dilo o escríbelo como quieras: la app lo convierte en un evento y te lo enseña antes de guardar.'),
+    entrada,
+    el('div', { class: 'chips frase-ejemplos', role: 'group', 'aria-label': 'Ejemplos' },
+      EJEMPLOS_FRASE.map((t) => el('button', { type: 'button', class: 'chip-tipo pequeno', onclick: () => { entrada.value = t; pintar(); entrada.focus(); } }, t))),
+    prev,
+    el('div', { class: 'fila-botones fin' }, bAjustar, bGuardar));
+  const cerrar = modal('Crear con una frase', cuerpo);
+  pintar();
+  setTimeout(() => entrada.focus(), 50);
 }
 
 // Una copia de un evento para otro calendario: siempre como evento TUYO (no "de todos").

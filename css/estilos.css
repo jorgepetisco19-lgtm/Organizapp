@@ -359,3 +359,10 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 /* Avisos de cambios de otras personas (tarjeta «Avisos» en la app de Android) */
 .avisos-cambios { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--borde); }
 .avisos-cambios h3 { margin: 0 0 6px; font-size: 1rem; }
+
+/* Crear con una frase */
+.frase-boton { width: 100%; min-height: 46px; margin: 2px 0 10px; }
+.frase-prev { margin: 10px 0; padding: 10px 12px; border: 1px dashed var(--borde); border-radius: 12px; display: grid; gap: 4px; }
+.frase-prev p { margin: 0; }
+.frase-tit { font-weight: 700; font-size: 1.05rem; overflow-wrap: anywhere; }
+.frase-ejemplos button { white-space: normal; text-align: left; height: auto; padding-top: 6px; padding-bottom: 6px; }

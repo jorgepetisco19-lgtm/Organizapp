@@ -87,6 +87,7 @@ with sync_playwright() as p:
     def nuevo_evento(tipo, titulo, fecha, ini='', fin='', rep=None, hasta=None, notas='', para=None):
         tab(page, 'Inicio')
         page.locator('.fab').click()
+        page.wait_for_timeout(150)  # el editor enfoca el título a los 50 ms: se espera a que acabe
         page.locator('.tipo-btn', has_text=tipo).click()
         page.get_by_label('Título').fill(titulo)
         page.get_by_label('Fecha').fill(fecha)
@@ -98,7 +99,10 @@ with sync_playwright() as p:
             page.get_by_label('Repetición').select_option(rep)
             if hasta: page.get_by_label('Repetir hasta').fill(hasta)
         page.locator('.modal').get_by_role('button', name='Guardar').click()
-        page.wait_for_timeout(300)
+        # espera a que el editor se cierre (o a que salga un aviso de error si no se puede guardar), no un tiempo fijo
+        try: page.wait_for_function("() => !document.querySelector('.modal') || document.querySelector('#aviso.error.visible')", timeout=4000)
+        except Exception: pass
+        page.wait_for_timeout(150)
     nuevo_evento('Deporte', 'Pilates', '2026-10-26', '19:00', '20:00', rep='semanal', hasta='2026-11-30')
     nuevo_evento('Plan', 'Cine', '2026-10-24', '21:30', '23:30')
     nuevo_evento('Tarea', 'Sacar pollo del congelador', '2026-10-23', '08:00')
@@ -1226,11 +1230,11 @@ with sync_playwright() as p:
     tab(page, 'Inicio'); page.locator('.fab').click()
     h = page.get_by_label('Hora de inicio')
     comprobar(h.get_attribute('inputmode') == 'numeric' and h.get_attribute('type') == 'text', 'la hora se escribe con teclado numérico (no con el reloj del móvil)')
-    h.press_sequentially('1930'); comprobar(h.input_value() == '19:30', 'escribir 1930 deja 19:30: ' + h.input_value())
-    h.fill(''); h.press_sequentially('9'); h.blur(); comprobar(h.input_value() == '09:00', 'un 9 suelto se completa a 09:00: ' + h.input_value())
-    h.fill(''); h.press_sequentially('930'); h.blur(); comprobar(h.input_value() == '09:30', '930 se completa a 09:30: ' + h.input_value())
-    h.fill(''); h.press_sequentially('1830'); h.press('Backspace'); comprobar(h.input_value() == '18:3', 'borrar funciona (no vuelve a poner lo borrado): ' + h.input_value())
-    h.fill(''); h.press_sequentially('2575'); h.blur()
+    page.wait_for_timeout(60); h.press_sequentially('1930'); page.wait_for_timeout(80); comprobar(h.input_value() == '19:30', 'escribir 1930 deja 19:30: ' + h.input_value())
+    h.fill(''); page.wait_for_timeout(60); h.press_sequentially('9'); page.wait_for_timeout(80); h.blur(); page.wait_for_timeout(80); comprobar(h.input_value() == '09:00', 'un 9 suelto se completa a 09:00: ' + h.input_value())
+    h.fill(''); page.wait_for_timeout(60); h.press_sequentially('930'); page.wait_for_timeout(80); h.blur(); page.wait_for_timeout(80); comprobar(h.input_value() == '09:30', '930 se completa a 09:30: ' + h.input_value())
+    h.fill(''); page.wait_for_timeout(60); h.press_sequentially('1830'); h.press('Backspace'); page.wait_for_timeout(80); comprobar(h.input_value() == '18:3', 'borrar funciona (no vuelve a poner lo borrado): ' + h.input_value())
+    h.fill(''); page.wait_for_timeout(60); h.press_sequentially('2575'); h.blur()
     comprobar('invalido' in (h.get_attribute('class') or ''), 'una hora imposible (25:75) se marca en rojo')
     page.get_by_label('Título').fill('Prueba hora')
     page.locator('.modal').get_by_role('button', name='Guardar').click(); page.wait_for_timeout(300)
@@ -1376,6 +1380,43 @@ with sync_playwright() as p:
     page.locator('.modal').get_by_role('button', name='Guardar').click(); page.wait_for_timeout(300)
     comprobar('máximo 7 días' in page.locator('#aviso').inner_text(), 'repetir cada semana algo de más de 7 días se rechaza con un mensaje claro')
     page.keyboard.press('Escape'); page.wait_for_timeout(200)
+
+    print('13v) Crear con una frase')
+    # hoy en la prueba: viernes 23/10/2026 a las 10:00
+    tab(page, 'Inicio')
+    page.get_by_role('button', name='Crear con una frase').click(); page.wait_for_timeout(200)
+    modal = page.locator('.modal')
+    comprobar(modal.get_by_role('button', name='Guardar').is_disabled(), 'sin frase, «Guardar» está desactivado')
+    page.get_by_label('Frase', exact=True).fill('cita revisar coche el martes a las 12')
+    pv = modal.locator('.frase-prev').inner_text()
+    comprobar('Revisar coche' in pv and 'Cita' in pv and '12:00' in pv and 'Martes 27 de octubre' in pv, 'la vista previa enseña tipo, título, día y hora: ' + pv.replace('\n', ' | '))
+    modal.get_by_role('button', name='Guardar').click(); page.wait_for_timeout(500)
+    comprobar(page.locator('.modal').count() == 0, 'al guardar, la ventana se cierra')
+    rc = [e for e in leer_db()['eventos'] if e['titulo'] == 'Revisar coche']
+    comprobar(len(rc) == 1 and rc[0]['tipo'] == 'compromiso' and rc[0]['fecha'] == '2026-10-27' and rc[0]['hora_inicio'][:5] == '12:00' and not rc[0]['repeticion']
+              and rc[0]['owner_id'] == USUARIOS_ID['jorge'] and rc[0]['compartido'] is False, 'se crea una cita de Jorge el martes 27 a las 12:00, sin repetir: ' + str(rc))
+    # una frase con repetición
+    page.get_by_role('button', name='Crear con una frase').click(); page.wait_for_timeout(200)
+    page.get_by_label('Frase', exact=True).fill('deporte Zumba todos los miércoles y viernes a las 7 de la tarde hasta el 20 de noviembre')
+    pv = page.locator('.modal .frase-prev').inner_text()
+    comprobar('Cada semana' in pv.capitalize() or 'cada semana' in pv.lower(), 'la vista previa dice que se repite: ' + pv.replace('\n', ' | '))
+    page.locator('.modal').get_by_role('button', name='Guardar').click(); page.wait_for_timeout(500)
+    zu = [e for e in leer_db()['eventos'] if e['titulo'] == 'Zumba']
+    comprobar(len(zu) == 1 and zu[0]['tipo'] == 'deporte' and zu[0]['repeticion'] == 'semanal' and zu[0]['dias_semana'] == [2, 4]
+              and zu[0]['hora_inicio'][:5] == '19:00' and zu[0]['repite_hasta'] == '2026-11-20' and zu[0]['fecha'] == '2026-10-23', 'serie semanal miércoles y viernes de 19:00 hasta el 20/11 (empieza hoy viernes a las 10:00): ' + str(zu))
+    # «Ajustar antes» abre el editor con los datos ya puestos
+    page.get_by_role('button', name='Crear con una frase').click(); page.wait_for_timeout(200)
+    page.get_by_label('Frase', exact=True).fill('cena con los suegros mañana a las 9 de la noche')
+    page.locator('.modal').get_by_role('button', name='Ajustar antes').click(); page.wait_for_timeout(300)
+    comprobar(page.get_by_label('Título').input_value() == 'Cena con los suegros' and page.get_by_label('Fecha').input_value() == '2026-10-24'
+              and page.get_by_label('Hora de inicio').input_value() == '21:00', 'el editor se abre con el título, el día y la hora de la frase')
+    comprobar(not any(e['titulo'] == 'Cena con los suegros' for e in leer_db()['eventos']), '«Ajustar antes» todavía no guarda nada')
+    page.get_by_label('Cerrar').click(); page.wait_for_timeout(200)
+    # una frase sin título no se puede guardar
+    page.get_by_role('button', name='Crear con una frase').click(); page.wait_for_timeout(200)
+    page.get_by_label('Frase', exact=True).fill('el martes a las 12')
+    comprobar(page.locator('.modal').get_by_role('button', name='Guardar').is_disabled() and 'Falta decir qué es' in page.locator('.modal .frase-prev').inner_text(), 'sin título no se puede guardar')
+    page.get_by_label('Cerrar').click(); page.wait_for_timeout(200)
 
     print('14) Inicio con el menú de hoy y tema oscuro')
     tab(page, 'Inicio')
