@@ -158,3 +158,31 @@ test('no revienta con cualquier texto', () => {
     assert.match(r.fecha, /^\d{4}-\d{2}-\d{2}$/);
   }
 });
+
+test('lista de la compra: «añade X a la compra»', () => {
+  comprueba('añade leche a la compra', { accion: 'compra', ok: true, articulos: ['Leche'] });
+  comprueba('añade leche, pan y huevos a la lista de la compra', { accion: 'compra', articulos: ['Leche', 'Pan', 'Huevos'] });
+  comprueba('Añade la leche y el pan a la lista de la compra', { articulos: ['Leche', 'Pan'] });
+  comprueba('apunta en la compra: 2 litros de leche', { articulos: ['2 litros de leche'] });
+  comprueba('añade a la compra papel higiénico', { articulos: ['Papel higiénico'] });
+  comprueba('pon pan en la lista', { accion: 'compra', articulos: ['Pan'] });
+  comprueba('lista de la compra: arroz, sal', { accion: 'compra', articulos: ['Arroz', 'Sal'] });
+  comprueba('por favor añade leche a la compra', { accion: 'compra', articulos: ['Leche'] });
+  comprueba('añade leche, Leche a la compra', { articulos: ['Leche'] }); // sin repetidos
+  comprueba('añade a la compra', { accion: 'compra', ok: false, sinTitulo: true, articulos: [] });
+});
+
+test('lista de la compra: no se confunde con eventos', () => {
+  comprueba('hacer la compra el sábado', { accion: 'evento', titulo: 'Hacer la compra', fecha: '2026-11-28' });
+  comprueba('ir a la compra', { accion: 'evento' });
+  comprueba('añade cita dentista el martes', { accion: 'evento', tipo: 'compromiso', titulo: 'Dentista' });
+  comprueba('añade una tarea comprar pan', { accion: 'evento', tipo: 'tarea', titulo: 'Comprar pan' });
+  comprueba('dentista el martes', { accion: 'evento' });
+});
+
+test('lista de la compra: límites', () => {
+  const r = f('añade ' + Array.from({ length: 25 }, (_, i) => 'cosa' + i).join(', ') + ' a la compra');
+  assert.equal(r.articulos.length, 20);
+  assert.equal(r.avisos.length, 1);
+  assert.equal(f('añade ' + 'x'.repeat(500) + ' a la compra').articulos[0].length, 200);
+});

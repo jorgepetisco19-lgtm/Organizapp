@@ -1418,6 +1418,24 @@ with sync_playwright() as p:
     comprobar(page.locator('.modal').get_by_role('button', name='Guardar').is_disabled() and 'Falta decir qué es' in page.locator('.modal .frase-prev').inner_text(), 'sin título no se puede guardar')
     page.get_by_label('Cerrar').click(); page.wait_for_timeout(200)
 
+    # la misma caja añade a la lista de la compra
+    n_antes = len([l for l in leer_db()['lineas'] if not l['evento_id']])
+    n_eventos = len(leer_db()['eventos'])
+    page.get_by_role('button', name='Crear con una frase').click(); page.wait_for_timeout(200)
+    page.get_by_label('Frase', exact=True).fill('añade leche, pan y huevos a la lista de la compra')
+    pv = page.locator('.modal .frase-prev').inner_text()
+    comprobar('Leche' in pv and 'Pan' in pv and 'Huevos' in pv and 'compra' in pv.lower(), 'la vista previa enseña los artículos de la compra: ' + pv.replace('\n', ' | '))
+    comprobar(page.locator('.modal').get_by_role('button', name='Ajustar antes').is_hidden(), 'en la compra no sale «Ajustar antes»')
+    page.locator('.modal').get_by_role('button', name='Guardar').click(); page.wait_for_timeout(500)
+    comprobar(page.locator('.modal').count() == 0, 'al guardar la compra, la ventana se cierra')
+    db = leer_db()
+    nuevas = sorted(l['texto'] for l in db['lineas'] if not l['evento_id'])[:]
+    comprobar(len(nuevas) == n_antes + 3 and all(x in nuevas for x in ('Leche', 'Pan', 'Huevos')) and len(db['eventos']) == n_eventos, f'se guardan 3 líneas de compra y ningún evento: {nuevas}')
+    tab(page, 'Compra'); page.wait_for_timeout(300)
+    tx = page.locator('#lista-compra').inner_text()
+    comprobar('Leche' in tx and 'Huevos' in tx, 'y aparecen en la pestaña Compra')
+    tab(page, 'Inicio')
+
     print('14) Inicio con el menú de hoy y tema oscuro')
     tab(page, 'Inicio')
     page.screenshot(path=f'{CAP}/13-inicio-hoy.png', full_page=True)

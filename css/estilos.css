@@ -366,3 +366,6 @@ button.icono.quitar { min-width: 40px; min-height: 40px; color: var(--suave); ba
 .frase-prev p { margin: 0; }
 .frase-tit { font-weight: 700; font-size: 1.05rem; overflow-wrap: anywhere; }
 .frase-ejemplos button { white-space: normal; text-align: left; height: auto; padding-top: 6px; padding-bottom: 6px; }
+
+.frase-compra { margin: 4px 0 0; padding-left: 20px; }
+.frase-compra li { margin: 2px 0; }

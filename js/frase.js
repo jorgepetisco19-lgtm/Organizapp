@@ -8,6 +8,7 @@
 //    Sin día: hoy.
 //  · Hora: «a las 12», «a las 17:30», «a las 8 y media de la noche», «de 17 a 18:30», «hasta las 19». Sin hora: evento sin hora.
 //    Sin «de la mañana/tarde/noche»: de 1 a 6 se entiende de la tarde; de 7 a 12, tal cual.
+//  · Lista de la compra: «añade leche, pan y huevos a la lista de la compra» (con orden al principio y «a/en la compra», o «lista de la compra: …»).
 //  · Repetición: «todos los martes», «los lunes y miércoles», «cada viernes», «todos los días», «entre semana», «los fines de semana»,
 //    «todas las semanas»; «hasta el 30 de noviembre» pone el fin. «Cada dos semanas», «cada mes»… no existen en la app: se avisa y no se repite.
 import { sumarDias, diaSemana, inicioSemana, normalizarDias, esFechaISO, pad, hoyISO } from './util.js';
@@ -34,9 +35,40 @@ function hora24(h, m, periodo) {
 }
 const valida = (h, m) => Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59;
 
+// ----- Lista de la compra: «añade leche, pan y huevos a la lista de la compra» -----
+// Hace falta una orden al principio (añade, apunta, anota, pon, agrega, mete, incluye) y decir «a/en/de la compra» o «a la lista»,
+// o empezar por «lista de la compra:». Así «hacer la compra el sábado» sigue siendo un evento.
+const MAX_ARTICULOS = 20;
+function interpretarCompra(orig, n) {
+  const verbo = /^(?:(?:por favor|oye|vale|venga)[ ,]+)?(?:a[nñ]ade|a[nñ]adir|apunta(?:me)?|anota(?:me)?|pon(?:me)?|agrega|agregar|mete|incluye)\b[ ,:]*/.exec(n);
+  const prefijo = !verbo && /^lista\s+de\s+(?:la\s+)?compras?\b[ ,:]*/.exec(n);
+  if (!verbo && !prefijo) return null;
+  let resto;
+  if (prefijo) resto = orig.slice(prefijo[0].length);
+  else {
+    const ini = verbo[0].length;
+    const nr = n.slice(ini);
+    const dest = /(?:\b(?:a|en|de|para)\s+(?:la|mi|nuestra)\s+(?:lista\s+(?:de\s+)?(?:la\s+|las\s+)?)?compras?\b|\b(?:a|en)\s+la\s+lista\b(?!\s+de\s+(?!la\s+compra)))[ ,:]*/.exec(nr);
+    if (!dest) return null;
+    resto = (orig.slice(ini, ini + dest.index) + ' ' + orig.slice(ini + dest.index + dest[0].length)).trim();
+  }
+  const avisos = [];
+  let trozos = resto.split(/\s*(?:,|;|\n)\s*|\s+y\s+/i).map((t) =>
+    t.replace(/\bpor favor\b/ig, ' ').replace(/^(?:el|la|los|las)\s+/i, '').replace(/^[\s:.\-]+|[\s:.\-]+$/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const vistos = new Set(); const articulos = [];
+  for (const t of trozos) {
+    const clave = t.toLowerCase(); if (vistos.has(clave)) continue; vistos.add(clave);
+    const x = t.slice(0, 200); articulos.push(x.charAt(0).toUpperCase() + x.slice(1));
+  }
+  if (articulos.length > MAX_ARTICULOS) { avisos.push(`Solo apunto ${MAX_ARTICULOS} artículos de una vez: el resto, en otra frase.`); articulos.length = MAX_ARTICULOS; }
+  return { accion: 'compra', ok: articulos.length > 0, sinTitulo: articulos.length === 0, articulos, avisos };
+}
+
 export function interpretarFrase(texto, { hoy = hoyISO(), ahora = null } = {}) {
   const orig = String(texto || '').normalize('NFC').replace(/\s+/g, ' ').trim();
   const n = sinAcentos(orig);
+  const compra = interpretarCompra(orig, n);
+  if (compra) return compra;
   const usado = new Array(n.length).fill(false);
   const avisos = [];
   const libre = (i, f) => { for (let k = i; k < f; k++) if (usado[k]) return false; return true; };
@@ -205,7 +237,7 @@ export function interpretarFrase(texto, { hoy = hoyISO(), ahora = null } = {}) {
   if (titulo.length > 120) { titulo = titulo.slice(0, 120).trim(); avisos.push('El título era muy largo: lo he cortado.'); }
 
   return {
-    ok: !!titulo, sinTitulo: !titulo, sinDia,
+    accion: 'evento', ok: !!titulo, sinTitulo: !titulo, sinDia,
     tipo, titulo, fecha, hora_inicio, hora_fin,
     repeticion,
     dias: repeticion ? (dias || [diaSemana(fecha)]) : null, // todos los días elegidos

@@ -1719,7 +1719,7 @@ function abrirEditorEvento({ ev = null, fecha = null, ocurrencia = null, borrado
 }
 
 // ---------- crear un evento con una frase («cita dentista el martes a las 12») ----------
-const EJEMPLOS_FRASE = ['cita dentista el martes a las 12', 'tarea sacar el pollo mañana', 'deporte pádel todos los sábados a las 10'];
+const EJEMPLOS_FRASE = ['cita dentista el martes a las 12', 'tarea sacar el pollo mañana', 'deporte pádel todos los sábados a las 10', 'añade leche, pan y huevos a la compra'];
 function abrirFrase() {
   const ahoraHM = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
   const entrada = el('textarea', {
@@ -1735,7 +1735,18 @@ function abrirFrase() {
     const texto = entrada.value.trim();
     r = texto ? interpretarFrase(texto, { hoy: hoyISO(), ahora: ahoraHM() }) : null;
     bGuardar.disabled = bAjustar.disabled = !(r && r.ok);
-    if (!r) { prev.replaceChildren(el('p', { class: 'suave' }, 'Empieza con «cita», «plan», «tarea» o «deporte» si quieres elegir el tipo; si no, será un plan. Di el día y la hora como lo dirías normalmente.')); return; }
+    bAjustar.hidden = !!r && r.accion === 'compra';
+    if (!r) { prev.replaceChildren(el('p', { class: 'suave' }, 'Empieza con «cita», «plan», «tarea» o «deporte» si quieres elegir el tipo; si no, será un plan. Di el día y la hora como lo dirías normalmente. Para la compra: «añade leche y pan a la compra».')); return; }
+    if (r.accion === 'compra') {
+      const filasC = [
+        el('div', { class: 'frase-tit' }, r.ok ? `🛒 Añadir a la lista de la compra (${r.articulos.length})` : 'Falta decir qué quieres comprar'),
+        ...(r.ok ? [el('ul', { class: 'frase-compra' }, r.articulos.map((x) => el('li', {}, x)))] : []),
+        el('div', { class: 'suave' }, `En el calendario «${S.espacio.nombre}».`),
+      ];
+      r.avisos.forEach((a) => filasC.push(el('div', { class: 'suave' }, '⚠️ ' + a)));
+      prev.replaceChildren(...filasC);
+      return;
+    }
     const t = TIPOS.find((x) => x.id === r.tipo);
     const hoy = hoyISO();
     const rel = r.fecha === hoy ? ' · hoy' : r.fecha === sumarDias(hoy, 1) ? ' · mañana' : '';
@@ -1755,6 +1766,18 @@ function abrirFrase() {
   bGuardar.onclick = () => {
     if (!r || !r.ok) return null;
     const x = r;
+    if (x.accion === 'compra') {
+      return conCarga(bGuardar, async () => {
+        const actuales = await D.cargarCompra(S.espacio.id);
+        if (actuales.length + x.articulos.length > 300) throw new Error('La lista admite como máximo 300 líneas.');
+        const base = Date.now();
+        const filas = await D.crearLineas(x.articulos.map((texto, i) => ({ espacio_id: S.espacio.id, evento_id: null, texto, orden: base + i, creado_por: S.user.id })));
+        if (S.compra !== null && S.compraEsp === S.espacio.id) S.compra = [...S.compra, ...filas];
+        cerrar();
+        aviso(`Añadido a la compra: ${x.articulos.join(', ')}`);
+        if (S.tab === 'compra' && pintarCompra && document.getElementById('lista-compra')) pintarCompra(); else render();
+      });
+    }
     return conCarga(bGuardar, async () => {
       await D.crearEventos([{
         espacio_id: S.espacio.id, owner_id: S.user.id, creado_por: S.user.id, compartido: false,
@@ -1769,7 +1792,7 @@ function abrirFrase() {
   };
 
   const cuerpo = el('div', { class: 'formulario' },
-    el('p', { class: 'suave' }, 'Dilo o escríbelo como quieras: la app lo convierte en un evento y te lo enseña antes de guardar.'),
+    el('p', { class: 'suave' }, 'Dilo o escríbelo como quieras: la app lo convierte en un evento (o en artículos de la compra) y te lo enseña antes de guardar.'),
     entrada,
     el('div', { class: 'chips frase-ejemplos', role: 'group', 'aria-label': 'Ejemplos' },
       EJEMPLOS_FRASE.map((t) => el('button', { type: 'button', class: 'chip-tipo pequeno', onclick: () => { entrada.value = t; pintar(); entrada.focus(); } }, t))),
